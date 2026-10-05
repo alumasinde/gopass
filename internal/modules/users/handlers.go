@@ -31,11 +31,17 @@ func NewAuthService(db *sql.DB, tokens *auth.Service) *Handler {
 	return &Handler{db: db, Service: NewService(repo, tokens), Auth: tokens}
 }
 
+
 func (h *Handler) registerRoutes(r chi.Router) {
 	r.Route("/users", func(r chi.Router) { r.Get("/", h.List); r.Post("/", h.Create); r.Get("/{id}", h.Get) })
+}
+
+// registerAuthRoutes mounts the public authentication endpoints.
+func (h *Handler) registerAuthRoutes(r chi.Router) {
 	r.Post("/auth/login", h.Login)
 	r.Post("/auth/refresh", h.Refresh)
 }
+
 
 func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 	var in struct {
