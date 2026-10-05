@@ -10,10 +10,13 @@ Use a dedicated database and DSN; never point tests at development/production da
 $env:DB_DSN='testuser:testpass@tcp(127.0.0.1:3306)/gopass_test?parseTime=true&charset=utf8mb4'
 go test ./... -count=1
 ```
+## Migrations
+Apply the schema to the test database before running integration tests:
+
+```powershell
 go run ./cmd/migrate up
-  go run ./cmd/migrate status
-  go run ./cmd/migrate down
-  
+```
+
 ## Required authorization cases
 - Tenant A cannot read Tenant B resources.
 - Security Officer cannot manage roles/users.

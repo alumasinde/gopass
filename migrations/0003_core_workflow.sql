@@ -1,5 +1,6 @@
-USE gopass;
-
+-- 0003_core_workflow: approval workflows, extra approval_requests columns, lookup indexes, more permissions.
+-- Re-runnable: ALTERs are guarded by information_schema checks (works on MySQL 5.7/8 and MariaDB;
+-- `ADD COLUMN IF NOT EXISTS` is MariaDB-only so it is deliberately not used).
 CREATE TABLE IF NOT EXISTS approval_workflows (
  id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
  organization_id BIGINT UNSIGNED NOT NULL,
@@ -25,15 +26,25 @@ CREATE TABLE IF NOT EXISTS approval_workflow_steps (
  UNIQUE KEY uq_workflow_step(workflow_id,step_order),
  FOREIGN KEY(workflow_id) REFERENCES approval_workflows(id) ON DELETE CASCADE
 );
-ALTER TABLE approval_requests ADD COLUMN workflow_id BIGINT UNSIGNED NULL;
-ALTER TABLE approval_requests ADD COLUMN step_id BIGINT UNSIGNED NULL;
-ALTER TABLE approval_requests ADD COLUMN decision_note VARCHAR(500) NULL;
-ALTER TABLE approval_requests ADD COLUMN assigned_to BIGINT UNSIGNED NULL;
-ALTER TABLE approval_requests ADD KEY idx_approval_org_gatepass(organization_id,gatepass_id,status,step_order);
-ALTER TABLE gatepasses ADD KEY idx_gatepasses_org_gate(organization_id,gate_id,status);
-ALTER TABLE credentials ADD KEY idx_credentials_org_gatepass(organization_id,gatepass_id,is_revoked);
-ALTER TABLE check_ins ADD KEY idx_checkins_org_gatepass(organization_id,gatepass_id,checked_in_at);
-ALTER TABLE check_outs ADD KEY idx_checkouts_org_gatepass(organization_id,gatepass_id,checked_out_at);
+
+SET @s := (SELECT IF(COUNT(*)=0, 'ALTER TABLE approval_requests ADD COLUMN workflow_id BIGINT UNSIGNED NULL', 'SELECT 1') FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name='approval_requests' AND column_name='workflow_id');
+PREPARE st FROM @s; EXECUTE st; DEALLOCATE PREPARE st;
+SET @s := (SELECT IF(COUNT(*)=0, 'ALTER TABLE approval_requests ADD COLUMN step_id BIGINT UNSIGNED NULL', 'SELECT 1') FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name='approval_requests' AND column_name='step_id');
+PREPARE st FROM @s; EXECUTE st; DEALLOCATE PREPARE st;
+SET @s := (SELECT IF(COUNT(*)=0, 'ALTER TABLE approval_requests ADD COLUMN decision_note VARCHAR(500) NULL', 'SELECT 1') FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name='approval_requests' AND column_name='decision_note');
+PREPARE st FROM @s; EXECUTE st; DEALLOCATE PREPARE st;
+SET @s := (SELECT IF(COUNT(*)=0, 'ALTER TABLE approval_requests ADD COLUMN assigned_to BIGINT UNSIGNED NULL', 'SELECT 1') FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name='approval_requests' AND column_name='assigned_to');
+PREPARE st FROM @s; EXECUTE st; DEALLOCATE PREPARE st;
+SET @s := (SELECT IF(COUNT(*)=0, 'ALTER TABLE approval_requests ADD KEY idx_approval_org_gatepass(organization_id,gatepass_id,status,step_order)', 'SELECT 1') FROM information_schema.statistics WHERE table_schema=DATABASE() AND table_name='approval_requests' AND index_name='idx_approval_org_gatepass');
+PREPARE st FROM @s; EXECUTE st; DEALLOCATE PREPARE st;
+SET @s := (SELECT IF(COUNT(*)=0, 'ALTER TABLE gatepasses ADD KEY idx_gatepasses_org_gate(organization_id,gate_id,status)', 'SELECT 1') FROM information_schema.statistics WHERE table_schema=DATABASE() AND table_name='gatepasses' AND index_name='idx_gatepasses_org_gate');
+PREPARE st FROM @s; EXECUTE st; DEALLOCATE PREPARE st;
+SET @s := (SELECT IF(COUNT(*)=0, 'ALTER TABLE credentials ADD KEY idx_credentials_org_gatepass(organization_id,gatepass_id,is_revoked)', 'SELECT 1') FROM information_schema.statistics WHERE table_schema=DATABASE() AND table_name='credentials' AND index_name='idx_credentials_org_gatepass');
+PREPARE st FROM @s; EXECUTE st; DEALLOCATE PREPARE st;
+SET @s := (SELECT IF(COUNT(*)=0, 'ALTER TABLE check_ins ADD KEY idx_checkins_org_gatepass(organization_id,gatepass_id,checked_in_at)', 'SELECT 1') FROM information_schema.statistics WHERE table_schema=DATABASE() AND table_name='check_ins' AND index_name='idx_checkins_org_gatepass');
+PREPARE st FROM @s; EXECUTE st; DEALLOCATE PREPARE st;
+SET @s := (SELECT IF(COUNT(*)=0, 'ALTER TABLE check_outs ADD KEY idx_checkouts_org_gatepass(organization_id,gatepass_id,checked_out_at)', 'SELECT 1') FROM information_schema.statistics WHERE table_schema=DATABASE() AND table_name='check_outs' AND index_name='idx_checkouts_org_gatepass');
+PREPARE st FROM @s; EXECUTE st; DEALLOCATE PREPARE st;
 
 INSERT IGNORE INTO permissions(code,name,description,module,action,is_system,created_at) VALUES
 ('organization.update','Organization Update','Update organization settings','organization','update',1,UTC_TIMESTAMP()),

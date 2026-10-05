@@ -71,7 +71,7 @@ func (s *Service) Issue(c context.Context, o, id int64) (*Credential, error) {
 		return nil, e
 	}
 	var blacklisted bool
-	if err = tx.QueryRowContext(c, `SELECT is_blacklisted FROM visitors WHERE organization_id=? AND id=? FOR SHARE`, o, visitor).Scan(&blacklisted); err != nil {
+	if err = tx.QueryRowContext(c, `SELECT is_blacklisted FROM visitors WHERE organization_id=? AND id=? LOCK IN SHARE MODE`, o, visitor).Scan(&blacklisted); err != nil {
 		return nil, err
 	}
 	if blacklisted {

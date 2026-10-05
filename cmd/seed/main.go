@@ -61,7 +61,9 @@ func main() {
 		}
 		uid, _ = r.LastInsertId()
 	}
-	_, e = tx.Exec(`INSERT IGNORE INTO user_roles(user_id,role_id,organization_id,scope_type,is_active,created_at,updated_at) VALUES(?,?,?,'ORGANIZATION',1,UTC_TIMESTAMP(),UTC_TIMESTAMP())`, uid, rid, oid)
+	// user_roles has no unique key that covers NULL site/gate scope, so INSERT IGNORE
+	// would add a duplicate assignment on every seed run. Guard explicitly instead.
+	_, e = tx.Exec(`INSERT INTO user_roles(user_id,role_id,organization_id,scope_type,is_active,created_at,updated_at) SELECT ?,?,?,'ORGANIZATION',1,UTC_TIMESTAMP(),UTC_TIMESTAMP() FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM user_roles WHERE user_id=? AND role_id=? AND organization_id=? AND scope_type='ORGANIZATION' AND site_id IS NULL AND gate_id IS NULL)`, uid, rid, oid, uid, rid, oid)
 	if e != nil {
 		log.Fatal(e)
 	}

@@ -16,11 +16,13 @@ Production-oriented Go/Chi foundation for a multi-tenant gatepass platform.
 All application endpoints are under `/api/v1`. OpenAPI is in `docs/openapi.yaml`.
 
 ## Run
-1. Create MySQL database and apply `migrations/0001_foundation.sql`, then `0002_permissions.sql`.
-2. Copy `.env.example` to `.env` and set a strong `JWT_SECRET`.
-3. Run `go mod tidy`.
-4. Run `go test ./...`.
+1. Copy `.env.example` to `.env`, set `DB_DSN` (or the `DB_*` parts) and a strong `JWT_SECRET`.
+2. Apply the schema: `go run ./cmd/migrate up` (creates the database if missing, applies every pending file in `migrations/`; check with `go run ./cmd/migrate status`).
+3. Optional demo data: `go run ./cmd/seed`.
+4. Run `go mod tidy`, then `go test ./...`.
 5. Run `go run ./cmd/api`.
+
+Migration files must not contain `CREATE DATABASE` / `USE`; the target database comes from `.env`. Write them re-runnable (`IF NOT EXISTS`, guarded `ALTER`s, `INSERT IGNORE`) because MySQL DDL cannot be rolled back.
 
 ## Security design
 Permissions are domain/action capabilities (`gatepasses.approve`, `checkins.perform`, etc.), not role checks. Roles grant permissions; user-role assignments carry a scope (`ORGANIZATION`, `SITE`, or `GATE`). Tenant-owned queries always include `organization_id`.
