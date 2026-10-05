@@ -3,9 +3,10 @@ package auth
 import (
 	"context"
 	"errors"
+	"time"
+
 	"github.com/golang-jwt/jwt/v5"
 	"golang.org/x/crypto/bcrypt"
-	"time"
 )
 
 type Claims struct {
@@ -62,6 +63,13 @@ func (s *Service) Access(tok string) (*Claims, error) {
 		return nil, errors.New("invalid access token")
 	}
 	return c, nil
+}
+func (s *Service) Refresh(tok string) (string, error) {
+	c, e := s.Parse(tok)
+	if e != nil || c.Type != "refresh" {
+		return "", errors.New("invalid refresh token")
+	}
+	return s.Issue(c.UserID, c.OrgID, false)
 }
 func With(ctx context.Context, c *Claims) context.Context { return context.WithValue(ctx, Key, c) }
 func From(ctx context.Context) (*Claims, bool)            { c, ok := ctx.Value(Key).(*Claims); return c, ok }

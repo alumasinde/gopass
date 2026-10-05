@@ -1,4 +1,4 @@
-# PassNow — Phase 1
+# GoPass — Phase 1
 
 Production-oriented Go/Chi foundation for a multi-tenant gatepass platform.
 
