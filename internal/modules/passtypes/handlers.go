@@ -2,6 +2,7 @@ package passtypes
 
 import (
 	"database/sql"
+	"github.com/alumasinde/gopass/internal/platform/apperr"
 	"github.com/alumasinde/gopass/internal/platform/audit"
 	"github.com/alumasinde/gopass/internal/platform/httpx"
 	"github.com/alumasinde/gopass/internal/platform/rbac"
@@ -23,13 +24,13 @@ func (h *Handler) registerRoutes(r chi.Router) {
 }
 func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
 	if h.authz.Require(r.Context(), "pass_types.view") != nil {
-		httpx.Error(w, 403, "forbidden", "permission denied")
+		httpx.Fail(w, apperr.Forbidden)
 		return
 	}
 	org, _ := tenancy.ID(r.Context())
 	rows, e := h.db.QueryContext(r.Context(), `SELECT id,name,code,requires_approval,validity_minutes,is_active FROM pass_types WHERE organization_id=? ORDER BY name`, org)
 	if e != nil {
-		httpx.Error(w, 500, "database_error", "database error")
+		httpx.Fail(w, apperr.Database)
 		return
 	}
 	defer rows.Close()
@@ -47,7 +48,7 @@ func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
 }
 func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 	if h.authz.Require(r.Context(), "pass_types.create") != nil {
-		httpx.Error(w, 403, "forbidden", "permission denied")
+		httpx.Fail(w, apperr.Forbidden)
 		return
 	}
 	var in struct {
@@ -56,13 +57,13 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 		ValidityMinutes  int
 	}
 	if httpx.Decode(r, &in) != nil || strings.TrimSpace(in.Name) == "" || strings.TrimSpace(in.Code) == "" || in.ValidityMinutes < 1 {
-		httpx.Error(w, 400, "invalid_request", "name, code and positive validity_minutes are required")
+		httpx.Fail(w, apperr.InvalidRequest.With("name, code and positive validity_minutes are required"))
 		return
 	}
 	org, _ := tenancy.ID(r.Context())
 	res, e := h.db.ExecContext(r.Context(), `INSERT INTO pass_types(organization_id,name,code,requires_approval,validity_minutes,is_active,created_at,updated_at) VALUES(?,?,?,?,?,1,UTC_TIMESTAMP(),UTC_TIMESTAMP())`, org, in.Name, in.Code, in.RequiresApproval, in.ValidityMinutes)
 	if e != nil {
-		httpx.Error(w, 409, "conflict", "pass type could not be created")
+		httpx.Fail(w, apperr.Conflict.With("pass type could not be created"))
 		return
 	}
 	id, _ := res.LastInsertId()

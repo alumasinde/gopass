@@ -2,6 +2,7 @@ package middleware
 
 import (
 	"context"
+	"github.com/alumasinde/gopass/internal/platform/apperr"
 	"github.com/alumasinde/gopass/internal/platform/auth"
 	"github.com/alumasinde/gopass/internal/platform/httpx"
 	"github.com/alumasinde/gopass/internal/platform/tenancy"
@@ -70,7 +71,7 @@ func Recover(l *slog.Logger) func(http.Handler) http.Handler {
 			defer func() {
 				if v := recover(); v != nil {
 					l.ErrorContext(r.Context(), "panic recovered", "error", v)
-					httpx.Error(w, 500, "internal_error", "internal server error")
+					httpx.Fail(w, apperr.Internal)
 				}
 			}()
 			next.ServeHTTP(w, r)
@@ -99,12 +100,12 @@ func Bearer(a *auth.Service) func(http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			p := strings.Fields(r.Header.Get("Authorization"))
 			if len(p) != 2 || strings.ToLower(p[0]) != "bearer" {
-				httpx.Error(w, 401, "unauthorized", "authentication required")
+				httpx.Fail(w, apperr.Unauthorized)
 				return
 			}
 			c, e := a.Access(p[1])
 			if e != nil {
-				httpx.Error(w, 401, "invalid_token", "invalid or expired access token")
+				httpx.Fail(w, apperr.InvalidToken)
 				return
 			}
 			ctx := auth.With(r.Context(), c)

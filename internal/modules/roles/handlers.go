@@ -2,6 +2,7 @@ package roles
 
 import (
 	"database/sql"
+	"github.com/alumasinde/gopass/internal/platform/apperr"
 	"github.com/alumasinde/gopass/internal/platform/audit"
 	"github.com/alumasinde/gopass/internal/platform/httpx"
 	"github.com/alumasinde/gopass/internal/platform/rbac"
@@ -28,13 +29,13 @@ func (h *Handler) registerRoutes(r chi.Router) {
 }
 func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
 	if h.authz.Require(r.Context(), "roles.view") != nil {
-		httpx.Error(w, 403, "forbidden", "permission denied")
+		httpx.Fail(w, apperr.Forbidden)
 		return
 	}
 	org, _ := tenancy.ID(r.Context())
 	rows, e := h.db.QueryContext(r.Context(), `SELECT id,name,code,is_system FROM roles WHERE organization_id=? ORDER BY name`, org)
 	if e != nil {
-		httpx.Error(w, 500, "database_error", "database error")
+		httpx.Fail(w, apperr.Database)
 		return
 	}
 	defer rows.Close()
@@ -51,18 +52,18 @@ func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
 }
 func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 	if h.authz.Require(r.Context(), "roles.create") != nil {
-		httpx.Error(w, 403, "forbidden", "permission denied")
+		httpx.Fail(w, apperr.Forbidden)
 		return
 	}
 	var in struct{ Name, Code string }
 	if httpx.Decode(r, &in) != nil || strings.TrimSpace(in.Name) == "" || strings.TrimSpace(in.Code) == "" {
-		httpx.Error(w, 400, "invalid_request", "name and code are required")
+		httpx.Fail(w, apperr.InvalidRequest.With("name and code are required"))
 		return
 	}
 	org, _ := tenancy.ID(r.Context())
 	res, e := h.db.ExecContext(r.Context(), `INSERT INTO roles(organization_id,name,code,is_system,created_at,updated_at) VALUES(?,?,?,0,UTC_TIMESTAMP(),UTC_TIMESTAMP())`, org, in.Name, in.Code)
 	if e != nil {
-		httpx.Error(w, 409, "conflict", "role could not be created")
+		httpx.Fail(w, apperr.Conflict.With("role could not be created"))
 		return
 	}
 	id, _ := res.LastInsertId()
@@ -71,30 +72,30 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 }
 func (h *Handler) AssignPermission(w http.ResponseWriter, r *http.Request) {
 	if h.authz.Require(r.Context(), "roles.manage_permissions") != nil {
-		httpx.Error(w, 403, "forbidden", "permission denied")
+		httpx.Fail(w, apperr.Forbidden)
 		return
 	}
 	rid, e := httpx.ID(chi.URLParam(r, "id"))
 	if e != nil {
-		httpx.Error(w, 400, "invalid_id", "invalid id")
+		httpx.Fail(w, apperr.InvalidID)
 		return
 	}
 	var in struct{ PermissionID int64 }
 	if httpx.Decode(r, &in) != nil || in.PermissionID < 1 {
-		httpx.Error(w, 400, "invalid_request", "permission_id is required")
+		httpx.Fail(w, apperr.InvalidRequest.With("permission_id is required"))
 		return
 	}
 	org, _ := tenancy.ID(r.Context())
 	_, e = h.db.ExecContext(r.Context(), `INSERT IGNORE INTO role_permissions(role_id,permission_id) SELECT ?,id FROM permissions WHERE id=? AND EXISTS(SELECT 1 FROM roles WHERE id=? AND organization_id=?)`, rid, in.PermissionID, rid, org)
 	if e != nil {
-		httpx.Error(w, 409, "conflict", "permission could not be assigned")
+		httpx.Fail(w, apperr.Conflict.With("permission could not be assigned"))
 		return
 	}
 	httpx.OK(w, map[string]any{"role_id": rid, "permission_id": in.PermissionID})
 }
 func (h *Handler) AssignRole(w http.ResponseWriter, r *http.Request) {
 	if h.authz.Require(r.Context(), "roles.assign") != nil {
-		httpx.Error(w, 403, "forbidden", "permission denied")
+		httpx.Fail(w, apperr.Forbidden)
 		return
 	}
 	var in struct {
@@ -103,13 +104,13 @@ func (h *Handler) AssignRole(w http.ResponseWriter, r *http.Request) {
 		SiteID, GateID *int64
 	}
 	if httpx.Decode(r, &in) != nil || in.UserID < 1 || in.RoleID < 1 {
-		httpx.Error(w, 400, "invalid_request", "user_id and role_id are required")
+		httpx.Fail(w, apperr.InvalidRequest.With("user_id and role_id are required"))
 		return
 	}
 	org, _ := tenancy.ID(r.Context())
 	_, e := h.db.ExecContext(r.Context(), `INSERT INTO user_roles(user_id,role_id,organization_id,scope_type,site_id,gate_id,is_active,created_at,updated_at) SELECT ?,id,?,COALESCE(NULLIF(?,''),'ORGANIZATION'),?,?,1,UTC_TIMESTAMP(),UTC_TIMESTAMP() FROM roles WHERE id=? AND organization_id=?`, in.UserID, org, in.ScopeType, in.SiteID, in.GateID, in.RoleID, org)
 	if e != nil {
-		httpx.Error(w, 409, "conflict", "role could not be assigned")
+		httpx.Fail(w, apperr.Conflict.With("role could not be assigned"))
 		return
 	}
 	httpx.OK(w, map[string]any{"user_id": in.UserID, "role_id": in.RoleID})

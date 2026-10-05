@@ -2,7 +2,9 @@ package users
 
 import (
 	"database/sql"
+	"github.com/alumasinde/gopass/internal/platform/apperr"
 	"github.com/alumasinde/gopass/internal/platform/audit"
+	"github.com/alumasinde/gopass/internal/platform/auth"
 	"github.com/alumasinde/gopass/internal/platform/httpx"
 	"github.com/alumasinde/gopass/internal/platform/rbac"
 	"github.com/alumasinde/gopass/internal/platform/tenancy"
@@ -23,13 +25,13 @@ func (h *Handler) registerRoutes(r chi.Router) {
 }
 func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
 	if h.authz.Require(r.Context(), "users.view") != nil {
-		httpx.Error(w, 403, "forbidden", "permission denied")
+		httpx.Fail(w, apperr.Forbidden)
 		return
 	}
 	org, _ := tenancy.ID(r.Context())
 	rows, e := h.db.QueryContext(r.Context(), `SELECT id,first_name,last_name,email,is_active FROM users WHERE organization_id=? ORDER BY id DESC LIMIT 100`, org)
 	if e != nil {
-		httpx.Error(w, 500, "database_error", "database error")
+		httpx.Fail(w, apperr.Database)
 		return
 	}
 	defer rows.Close()
@@ -46,23 +48,23 @@ func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
 }
 func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 	if h.authz.Require(r.Context(), "users.create") != nil {
-		httpx.Error(w, 403, "forbidden", "permission denied")
+		httpx.Fail(w, apperr.Forbidden)
 		return
 	}
 	var in struct{ FirstName, LastName, Email, Password string }
 	if httpx.Decode(r, &in) != nil || in.FirstName == "" || in.LastName == "" || in.Email == "" || len(in.Password) < 12 {
-		httpx.Error(w, 400, "invalid_request", "first_name, last_name, email and password of at least 12 characters are required")
+		httpx.Fail(w, apperr.InvalidRequest.With("first_name, last_name, email and password of at least 12 characters are required"))
 		return
 	}
 	org, _ := tenancy.ID(r.Context())
-	h, e := auth.Hash(in.Password)
+	hash, e := auth.Hash(in.Password)
 	if e != nil {
-		httpx.Error(w, 500, "internal_error", "password hashing failed")
+		httpx.Fail(w, apperr.Internal.With("password hashing failed"))
 		return
 	}
-	res, e := h.db.ExecContext(r.Context(), `INSERT INTO users(organization_id,first_name,last_name,email,password_hash,is_active,created_at,updated_at) VALUES(?,?,?,?,?,1,UTC_TIMESTAMP(),UTC_TIMESTAMP())`, org, in.FirstName, in.LastName, strings.ToLower(strings.TrimSpace(in.Email)), h)
+	res, e := h.db.ExecContext(r.Context(), `INSERT INTO users(organization_id,first_name,last_name,email,password_hash,is_active,created_at,updated_at) VALUES(?,?,?,?,?,1,UTC_TIMESTAMP(),UTC_TIMESTAMP())`, org, in.FirstName, in.LastName, strings.ToLower(strings.TrimSpace(in.Email)), hash)
 	if e != nil {
-		httpx.Error(w, 409, "conflict", "user could not be created")
+		httpx.Fail(w, apperr.Conflict.With("user could not be created"))
 		return
 	}
 	id, _ := res.LastInsertId()
@@ -71,19 +73,19 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 }
 func (h *Handler) Get(w http.ResponseWriter, r *http.Request) {
 	if h.authz.Require(r.Context(), "users.view") != nil {
-		httpx.Error(w, 403, "forbidden", "permission denied")
+		httpx.Fail(w, apperr.Forbidden)
 		return
 	}
 	id, e := httpx.ID(chi.URLParam(r, "id"))
 	if e != nil {
-		httpx.Error(w, 400, "invalid_id", "invalid id")
+		httpx.Fail(w, apperr.InvalidID)
 		return
 	}
 	org, _ := tenancy.ID(r.Context())
 	var fn, ln, email string
 	var active bool
 	if e = h.db.QueryRowContext(r.Context(), `SELECT first_name,last_name,email,is_active FROM users WHERE organization_id=? AND id=?`, org, id).Scan(&fn, &ln, &email, &active); e != nil {
-		httpx.Error(w, 404, "not_found", "user not found")
+		httpx.Fail(w, apperr.NotFound.With("user not found"))
 		return
 	}
 	httpx.OK(w, map[string]any{"id": id, "first_name": fn, "last_name": ln, "email": email, "is_active": active})

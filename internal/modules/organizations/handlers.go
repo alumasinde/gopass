@@ -2,7 +2,7 @@ package organizations
 
 import (
 	"database/sql"
-	"fmt"
+	"github.com/alumasinde/gopass/internal/platform/apperr"
 	"github.com/alumasinde/gopass/internal/platform/audit"
 	"github.com/alumasinde/gopass/internal/platform/httpx"
 	"github.com/alumasinde/gopass/internal/platform/rbac"
@@ -26,26 +26,26 @@ func (h *Handler) registerRoutes(r chi.Router) {
 
 func (h *Handler) Get(w http.ResponseWriter, r *http.Request) {
 	if h.authz.Require(r.Context(), "organization.view") != nil {
-		httpx.Error(w, 403, "forbidden", "permission denied")
+		httpx.Fail(w, apperr.Forbidden)
 		return
 	}
 	org, e := tenancy.ID(r.Context())
 	if e != nil {
-		httpx.Error(w, 500, "tenant_missing", e.Error())
+		httpx.Fail(w, apperr.TenantMissing)
 		return
 	}
 	var id int64
 	var name, slug string
 	var active bool
 	if e = h.db.QueryRowContext(r.Context(), `SELECT id,name,slug,is_active FROM organizations WHERE id=?`, org).Scan(&id, &name, &slug, &active); e != nil {
-		httpx.Error(w, 404, "not_found", "organization not found")
+		httpx.Fail(w, apperr.NotFound.With("organization not found"))
 		return
 	}
 	httpx.OK(w, map[string]any{"id": id, "name": name, "slug": slug, "is_active": active})
 }
 func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
 	if h.authz.Require(r.Context(), "organization.update") != nil {
-		httpx.Error(w, 403, "forbidden", "permission denied")
+		httpx.Fail(w, apperr.Forbidden)
 		return
 	}
 	org, _ := tenancy.ID(r.Context())
@@ -54,11 +54,11 @@ func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
 		Slug string `json:"slug"`
 	}
 	if httpx.Decode(r, &in) != nil || strings.TrimSpace(in.Name) == "" || strings.TrimSpace(in.Slug) == "" {
-		httpx.Error(w, 400, "invalid_request", "name and slug are required")
+		httpx.Fail(w, apperr.InvalidRequest.With("name and slug are required"))
 		return
 	}
 	if _, e := h.db.ExecContext(r.Context(), `UPDATE organizations SET name=?,slug=?,updated_at=UTC_TIMESTAMP() WHERE id=?`, in.Name, in.Slug, org); e != nil {
-		httpx.Error(w, 409, "conflict", "organization could not be updated")
+		httpx.Fail(w, apperr.Conflict.With("organization could not be updated"))
 		return
 	}
 	h.audit.Record(r.Context(), audit.Entry{Action: "organization.updated", ResourceType: "organization", ResourceID: org})

@@ -3,6 +3,7 @@ package checkins
 import (
 	"database/sql"
 	"fmt"
+	"github.com/alumasinde/gopass/internal/platform/apperr"
 	"github.com/alumasinde/gopass/internal/platform/audit"
 	"github.com/alumasinde/gopass/internal/platform/httpx"
 	"github.com/alumasinde/gopass/internal/platform/rbac"
@@ -27,17 +28,17 @@ var fields = []string{"id", "gatepass_id", "gate_id", "checked_in_at"}
 
 func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
 	if h.authz.Require(r.Context(), "checkins.view") != nil {
-		httpx.Error(w, 403, "forbidden", "permission denied")
+		httpx.Fail(w, apperr.Forbidden)
 		return
 	}
 	org, e := tenancy.ID(r.Context())
 	if e != nil {
-		httpx.Error(w, 500, "tenant_missing", e.Error())
+		httpx.Fail(w, apperr.TenantMissing)
 		return
 	}
 	rows, e := h.db.QueryContext(r.Context(), `SELECT id, gatepass_id, gate_id, checked_in_at FROM check_ins WHERE organization_id=? ORDER BY id DESC LIMIT 100`, org)
 	if e != nil {
-		httpx.Error(w, 500, "database_error", "database error")
+		httpx.Fail(w, apperr.Database)
 		return
 	}
 	defer rows.Close()
@@ -61,12 +62,12 @@ func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
 }
 func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 	if h.authz.Require(r.Context(), "checkins.perform") != nil {
-		httpx.Error(w, 403, "forbidden", "permission denied")
+		httpx.Fail(w, apperr.Forbidden)
 		return
 	}
 	var in map[string]any
 	if httpx.Decode(r, &in) != nil {
-		httpx.Error(w, 400, "invalid_request", "invalid JSON")
+		httpx.Fail(w, apperr.InvalidJSON)
 		return
 	}
 	org, _ := tenancy.ID(r.Context())
@@ -74,14 +75,14 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 	for _, f := range []string{"gatepass_id", "gate_id"} {
 		v, ok := in[f]
 		if !ok || v == nil || strings.TrimSpace(fmt.Sprint(v)) == "" {
-			httpx.Error(w, 400, "invalid_request", f+" is required")
+			httpx.Fail(w, apperr.InvalidRequest.With(f+" is required"))
 			return
 		}
 		args = append(args, v)
 	}
 	res, e := h.db.ExecContext(r.Context(), `INSERT INTO check_ins(organization_id,gatepass_id, gate_id,created_at,updated_at) VALUES (?,?, ?,UTC_TIMESTAMP(),UTC_TIMESTAMP())`, args...)
 	if e != nil {
-		httpx.Error(w, 409, "conflict", "resource could not be created")
+		httpx.Fail(w, apperr.CreateFailed)
 		return
 	}
 	id, _ := res.LastInsertId()
@@ -90,12 +91,12 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 }
 func (h *Handler) Get(w http.ResponseWriter, r *http.Request) {
 	if h.authz.Require(r.Context(), "checkins.view") != nil {
-		httpx.Error(w, 403, "forbidden", "permission denied")
+		httpx.Fail(w, apperr.Forbidden)
 		return
 	}
 	id, e := httpx.ID(chi.URLParam(r, "id"))
 	if e != nil {
-		httpx.Error(w, 400, "invalid_id", "invalid id")
+		httpx.Fail(w, apperr.InvalidID)
 		return
 	}
 	org, _ := tenancy.ID(r.Context())
@@ -106,7 +107,7 @@ func (h *Handler) Get(w http.ResponseWriter, r *http.Request) {
 		ptr[i] = &vals[i]
 	}
 	if row.Scan(ptr...) != nil {
-		httpx.Error(w, 404, "not_found", "resource not found")
+		httpx.Fail(w, apperr.NotFound)
 		return
 	}
 	item := map[string]any{}

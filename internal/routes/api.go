@@ -2,18 +2,7 @@ package routes
 
 import (
 	"github.com/alumasinde/gopass/internal/app/http/middleware"
-	"github.com/alumasinde/gopass/internal/modules/approvals"
-	"github.com/alumasinde/gopass/internal/modules/checkins"
-	"github.com/alumasinde/gopass/internal/modules/checkouts"
-	"github.com/alumasinde/gopass/internal/modules/credentials"
-	"github.com/alumasinde/gopass/internal/modules/gatepasses"
-	"github.com/alumasinde/gopass/internal/modules/gates"
-	"github.com/alumasinde/gopass/internal/modules/organizations"
-	"github.com/alumasinde/gopass/internal/modules/passtypes"
-	"github.com/alumasinde/gopass/internal/modules/roles"
-	"github.com/alumasinde/gopass/internal/modules/sites"
 	"github.com/alumasinde/gopass/internal/modules/users"
-	"github.com/alumasinde/gopass/internal/modules/visitors"
 	"github.com/alumasinde/gopass/internal/platform/audit"
 	"github.com/alumasinde/gopass/internal/platform/httpx"
 	"github.com/alumasinde/gopass/internal/platform/rbac"
