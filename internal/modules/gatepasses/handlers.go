@@ -73,8 +73,10 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var in struct {
-		VisitorID, GateID, PassTypeID int64 `json:"visitor_id"`
-		ValidFrom, ValidUntil         string
+		VisitorID             int64 `json:"visitor_id"`
+		GateID                int64 `json:"gate_id"`
+		PassTypeID            int64 `json:"pass_type_id"`
+		ValidFrom, ValidUntil string
 	}
 	if httpx.Decode(r, &in) != nil {
 		httpx.Fail(w, apperr.InvalidJSON)
@@ -91,6 +93,10 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	o, _ := tenancy.ID(r.Context())
+	if e := h.authz.RequireWithScope(r.Context(), "gatepasses.create", rbac.ScopeGate, in.GateID); e != nil {
+		httpx.Fail(w, apperr.Forbidden)
+		return
+	}
 	v, e := h.service.Create(r.Context(), o, in.VisitorID, in.GateID, in.PassTypeID, vf, vu)
 	if errors.Is(e, ErrBlacklisted) {
 		httpx.Fail(w, apperr.Conflict.With("visitor is blacklisted"))
@@ -130,6 +136,8 @@ func (h *Handler) Submit(w http.ResponseWriter, r *http.Request) {
 		httpx.Fail(w, apperr.Conflict.With("approval workflow is not configured"))
 	case errors.Is(e, ErrInvalid):
 		httpx.Fail(w, apperr.InvalidRequest)
+	case errors.Is(e, rbac.ErrForbidden):
+		httpx.Fail(w, apperr.Forbidden)
 	case e != nil:
 		httpx.Fail(w, apperr.Database)
 	default:
@@ -161,6 +169,10 @@ func (h *Handler) transition(w http.ResponseWriter, r *http.Request, p, to, acti
 	}
 	if errors.Is(e, ErrTransition) {
 		httpx.Fail(w, apperr.Conflict.With("invalid gatepass state transition"))
+		return
+	}
+	if errors.Is(e, rbac.ErrForbidden) {
+		httpx.Fail(w, apperr.Forbidden)
 		return
 	}
 	if e != nil {

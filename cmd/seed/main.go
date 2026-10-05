@@ -45,10 +45,11 @@ func main() {
 			log.Fatal(e)
 		}
 		rid, _ = r.LastInsertId()
-		_, e = tx.Exec(`INSERT IGNORE INTO role_permissions(role_id,permission_id) SELECT ?,id FROM permissions`, rid)
-		if e != nil {
-			log.Fatal(e)
-		}
+	}
+	// Keep the seeded organization administrator synchronized with newly added
+	// system permissions on subsequent seed runs.
+	if _, e = tx.Exec(`INSERT IGNORE INTO role_permissions(role_id,permission_id) SELECT ?,id FROM permissions`, rid); e != nil {
+		log.Fatal(e)
 	}
 	var uid int64
 	e = tx.QueryRow(`SELECT id FROM users WHERE organization_id=? AND email=?`, oid, email).Scan(&uid)

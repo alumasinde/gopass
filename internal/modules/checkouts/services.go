@@ -9,8 +9,6 @@ import (
 	"time"
 )
 
-
-
 type Service struct {
 	db    *sql.DB
 	authz *rbac.Service
@@ -36,44 +34,52 @@ func (s *Service) List(c context.Context, o int64) ([]CheckOut, error) {
 	return x, rows.Err()
 }
 func (s *Service) Create(c context.Context, o int64, gp, gate int64) (*CheckOut, error) {
-	cl, _ := auth.From(c)
+	cl, ok := auth.From(c)
+	if !ok {
+		return nil, ErrInvalid
+	}
 	if e := s.authz.RequireWithScope(c, "checkouts.perform", rbac.ScopeGate, gate); e != nil {
 		return nil, e
-	}
-	var actualGate int64
-	var status string
-	e := s.db.QueryRowContext(c, `SELECT gate_id,status FROM gatepasses WHERE organization_id=? AND id=?`, o, gp).Scan(&actualGate, &status)
-	if errors.Is(e, sql.ErrNoRows) {
-		return nil, ErrNotFound
-	}
-	if e != nil {
-		return nil, e
-	}
-	if actualGate != gate || status != "CHECKED_IN" {
-		return nil, ErrInvalid
-	}
-	var n int
-	if e := s.db.QueryRowContext(c, `SELECT COUNT(*) FROM check_outs WHERE organization_id=? AND gatepass_id=?`, o, gp).Scan(&n); e != nil {
-		return nil, e
-	}
-	if n > 0 {
-		return nil, ErrInvalid
 	}
 	tx, e := s.db.BeginTx(c, nil)
 	if e != nil {
 		return nil, e
 	}
 	defer tx.Rollback()
-	res, e := tx.ExecContext(c, `INSERT INTO check_outs(organization_id,gatepass_id,gate_id,checked_out_by,checked_out_at) VALUES(?,?,?,?,UTC_TIMESTAMP())`, o, gp, gate, cl.UserID)
-	if e != nil {
-		return nil, e
+	var actualGate int64
+	var status string
+	err := tx.QueryRowContext(c, `SELECT gate_id,status FROM gatepasses WHERE organization_id=? AND id=? FOR UPDATE`, o, gp).Scan(&actualGate, &status)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrNotFound
 	}
-	if _, e = tx.ExecContext(c, `UPDATE gatepasses SET status='CHECKED_OUT',updated_at=UTC_TIMESTAMP() WHERE organization_id=? AND id=? AND status='CHECKED_IN'`, o, gp); e != nil {
-		return nil, e
+	if err != nil {
+		return nil, err
 	}
-	if e = tx.Commit(); e != nil {
-		return nil, e
+	if actualGate != gate || status != "CHECKED_IN" {
+		return nil, ErrInvalid
+	}
+	var n int
+	if err = tx.QueryRowContext(c, `SELECT COUNT(*) FROM check_outs WHERE organization_id=? AND gatepass_id=?`, o, gp).Scan(&n); err != nil {
+		return nil, err
+	}
+	if n > 0 {
+		return nil, ErrInvalid
+	}
+	res, err := tx.ExecContext(c, `INSERT INTO check_outs(organization_id,gatepass_id,gate_id,checked_out_by,checked_out_at) VALUES(?,?,?,?,UTC_TIMESTAMP())`, o, gp, gate, cl.UserID)
+	if err != nil {
+		return nil, err
+	}
+	res2, err := tx.ExecContext(c, `UPDATE gatepasses SET status='CHECKED_OUT',updated_at=UTC_TIMESTAMP() WHERE organization_id=? AND id=? AND status='CHECKED_IN'`, o, gp)
+	if err != nil {
+		return nil, err
+	}
+	if n, _ := res2.RowsAffected(); n != 1 {
+		return nil, ErrInvalid
+	}
+	if err = tx.Commit(); err != nil {
+		return nil, err
 	}
 	id, _ := res.LastInsertId()
-	return &CheckOut{ID: id, OrganizationID: o, GatepassID: gp, GateID: gate, CheckedOutBy: &cl.UserID, CheckedOutAt: time.Now().UTC().Format(time.RFC3339)}, nil
+	now := time.Now().UTC().Format(time.RFC3339)
+	return &CheckOut{ID: id, OrganizationID: o, GatepassID: gp, GateID: gate, CheckedOutBy: &cl.UserID, CheckedOutAt: now}, nil
 }

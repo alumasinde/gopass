@@ -9,8 +9,6 @@ import (
 	"time"
 )
 
-
-
 type Service struct {
 	db    *sql.DB
 	authz *rbac.Service
@@ -36,11 +34,22 @@ func (s *Service) List(c context.Context, o int64) ([]CheckIn, error) {
 	return x, rows.Err()
 }
 func (s *Service) Create(c context.Context, o int64, token string, gate int64) (*CheckIn, error) {
-	cl, _ := auth.From(c)
+	cl, ok := auth.From(c)
+	if !ok {
+		return nil, ErrInvalid
+	}
+	if e := s.authz.RequireWithScope(c, "checkins.perform", rbac.ScopeGate, gate); e != nil {
+		return nil, e
+	}
+	tx, e := s.db.BeginTx(c, nil)
+	if e != nil {
+		return nil, e
+	}
+	defer tx.Rollback()
 	var gpID, gpGate int64
 	var status string
 	var exp time.Time
-	err := s.db.QueryRowContext(c, `SELECT gp.id,gp.gate_id,gp.status,cr.expires_at FROM credentials cr JOIN gatepasses gp ON gp.id=cr.gatepass_id WHERE cr.organization_id=? AND cr.token=? AND cr.is_revoked=0`, o, token).Scan(&gpID, &gpGate, &status, &exp)
+	err := tx.QueryRowContext(c, `SELECT gp.id,gp.gate_id,gp.status,cr.expires_at FROM credentials cr JOIN gatepasses gp ON gp.id=cr.gatepass_id WHERE cr.organization_id=? AND cr.token=? AND cr.is_revoked=0 FOR UPDATE`, o, token).Scan(&gpID, &gpGate, &status, &exp)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -50,31 +59,28 @@ func (s *Service) Create(c context.Context, o int64, token string, gate int64) (
 	if gpGate != gate || status != "ISSUED" || time.Now().UTC().After(exp) {
 		return nil, ErrInvalid
 	}
-	if e := s.authz.RequireWithScope(c, "checkins.perform", rbac.ScopeGate, gate); e != nil {
-		return nil, e
-	}
 	var n int
-	if e := s.db.QueryRowContext(c, `SELECT COUNT(*) FROM check_ins WHERE organization_id=? AND gatepass_id=?`, o, gpID).Scan(&n); e != nil {
-		return nil, e
+	if err = tx.QueryRowContext(c, `SELECT COUNT(*) FROM check_ins WHERE organization_id=? AND gatepass_id=?`, o, gpID).Scan(&n); err != nil {
+		return nil, err
 	}
 	if n > 0 {
 		return nil, ErrAlready
 	}
-	tx, e := s.db.BeginTx(c, nil)
-	if e != nil {
-		return nil, e
+	res, err := tx.ExecContext(c, `INSERT INTO check_ins(organization_id,gatepass_id,gate_id,checked_in_by,checked_in_at) VALUES(?,?,?,?,UTC_TIMESTAMP())`, o, gpID, gate, cl.UserID)
+	if err != nil {
+		return nil, err
 	}
-	defer tx.Rollback()
-	res, e := tx.ExecContext(c, `INSERT INTO check_ins(organization_id,gatepass_id,gate_id,checked_in_by,checked_in_at) VALUES(?,?,?,?,UTC_TIMESTAMP())`, o, gpID, gate, cl.UserID)
-	if e != nil {
-		return nil, e
+	res2, err := tx.ExecContext(c, `UPDATE gatepasses SET status='CHECKED_IN',updated_at=UTC_TIMESTAMP() WHERE organization_id=? AND id=? AND status='ISSUED'`, o, gpID)
+	if err != nil {
+		return nil, err
 	}
-	if _, e = tx.ExecContext(c, `UPDATE gatepasses SET status='CHECKED_IN',updated_at=UTC_TIMESTAMP() WHERE organization_id=? AND id=? AND status='ISSUED'`, o, gpID); e != nil {
-		return nil, e
+	if n, _ := res2.RowsAffected(); n != 1 {
+		return nil, ErrInvalid
 	}
-	if e = tx.Commit(); e != nil {
-		return nil, e
+	if err = tx.Commit(); err != nil {
+		return nil, err
 	}
 	id, _ := res.LastInsertId()
-	return &CheckIn{ID: id, OrganizationID: o, GatepassID: gpID, GateID: gate, CheckedInBy: &cl.UserID, CheckedInAt: time.Now().UTC().Format(time.RFC3339)}, nil
+	now := time.Now().UTC().Format(time.RFC3339)
+	return &CheckIn{ID: id, OrganizationID: o, GatepassID: gpID, GateID: gate, CheckedInBy: &cl.UserID, CheckedInAt: now}, nil
 }

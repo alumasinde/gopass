@@ -20,8 +20,6 @@ const (
 	StatusRevoked         = "REVOKED"
 )
 
-
-
 type Service struct {
 	db    *sql.DB
 	authz *rbac.Service
@@ -85,6 +83,15 @@ func (s *Service) Create(c context.Context, o, visitor, gate, passType int64, vf
 	return s.Get(c, o, id)
 }
 func (s *Service) Submit(c context.Context, o, id int64) error {
+	var gateID int64
+	if err := s.db.QueryRowContext(c, `SELECT gate_id FROM gatepasses WHERE organization_id=? AND id=?`, o, id).Scan(&gateID); errors.Is(err, sql.ErrNoRows) {
+		return ErrNotFound
+	} else if err != nil {
+		return err
+	}
+	if err := s.RequireGateScope(c, "gatepasses.submit", gateID); err != nil {
+		return err
+	}
 	tx, e := s.db.BeginTx(c, nil)
 	if e != nil {
 		return e
@@ -123,8 +130,9 @@ func (s *Service) Submit(c context.Context, o, id int64) error {
 		return tx.Commit()
 	}
 	var wfID, stepID int64
+	var stepOrder int
 	var permission, scope string
-	err := tx.QueryRowContext(c, `SELECT aw.id,aws.id,aws.permission_code,aws.scope_type FROM approval_workflows aw JOIN approval_workflow_steps aws ON aws.workflow_id=aw.id AND aws.step_order=1 AND aws.is_active=1 WHERE aw.organization_id=? AND (aw.pass_type_id=? OR aw.pass_type_id IS NULL) AND aw.is_active=1 ORDER BY CASE WHEN aw.pass_type_id=? THEN 0 ELSE 1 END,aw.id LIMIT 1`, o, passType, passType).Scan(&wfID, &stepID, &permission, &scope)
+	err := tx.QueryRowContext(c, `SELECT aw.id,aws.id,aws.step_order,aws.permission_code,aws.scope_type FROM approval_workflows aw JOIN approval_workflow_steps aws ON aws.workflow_id=aw.id AND aws.is_active=1 WHERE aw.organization_id=? AND (aw.pass_type_id=? OR aw.pass_type_id IS NULL) AND aw.is_active=1 ORDER BY CASE WHEN aw.pass_type_id=? THEN 0 ELSE 1 END,aws.step_order,aw.id LIMIT 1`, o, passType, passType).Scan(&wfID, &stepID, &stepOrder, &permission, &scope)
 	if errors.Is(err, sql.ErrNoRows) {
 		return ErrApprovalRequired
 	}
@@ -134,7 +142,7 @@ func (s *Service) Submit(c context.Context, o, id int64) error {
 	if _, e = tx.ExecContext(c, `UPDATE gatepasses SET status=?,updated_at=UTC_TIMESTAMP() WHERE organization_id=? AND id=?`, StatusPendingApproval, o, id); e != nil {
 		return e
 	}
-	_, e = tx.ExecContext(c, `INSERT INTO approval_requests(organization_id,gatepass_id,status,step_order,workflow_id,step_id,created_at,updated_at) VALUES(?,?,?,?,?,?,UTC_TIMESTAMP(),UTC_TIMESTAMP())`, o, id, "PENDING", 1, wfID, stepID)
+	_, e = tx.ExecContext(c, `INSERT INTO approval_requests(organization_id,gatepass_id,status,step_order,workflow_id,step_id,created_at,updated_at) VALUES(?,?,?,?,?,?,UTC_TIMESTAMP(),UTC_TIMESTAMP())`, o, id, "PENDING", stepOrder, wfID, stepID)
 	if e != nil {
 		return e
 	}
@@ -159,15 +167,47 @@ func validTransition(from, to string) bool {
 }
 
 func (s *Service) Transition(c context.Context, o, id int64, to string) error {
-	v, e := s.Get(c, o, id)
+	var gateID int64
+	if err := s.db.QueryRowContext(c, `SELECT gate_id FROM gatepasses WHERE organization_id=? AND id=?`, o, id).Scan(&gateID); errors.Is(err, sql.ErrNoRows) {
+		return ErrNotFound
+	} else if err != nil {
+		return err
+	}
+	permission := "gatepasses.cancel"
+	if to == StatusRevoked {
+		permission = "gatepasses.revoke"
+	}
+	if err := s.RequireGateScope(c, permission, gateID); err != nil {
+		return err
+	}
+	tx, e := s.db.BeginTx(c, nil)
 	if e != nil {
 		return e
 	}
-	if !validTransition(v.Status, to) {
+	defer tx.Rollback()
+	var from string
+	err := tx.QueryRowContext(c, `SELECT status FROM gatepasses WHERE organization_id=? AND id=? FOR UPDATE`, o, id).Scan(&from)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ErrNotFound
+	}
+	if err != nil {
+		return err
+	}
+	if !validTransition(from, to) {
 		return ErrTransition
 	}
-	_, e = s.db.ExecContext(c, `UPDATE gatepasses SET status=?,updated_at=UTC_TIMESTAMP() WHERE organization_id=? AND id=?`, to, o, id)
-	return e
+	res, err := tx.ExecContext(c, `UPDATE gatepasses SET status=?,updated_at=UTC_TIMESTAMP() WHERE organization_id=? AND id=? AND status=?`, to, o, id, from)
+	if err != nil {
+		return err
+	}
+	n, err := res.RowsAffected()
+	if err != nil || n != 1 {
+		if err != nil {
+			return err
+		}
+		return ErrTransition
+	}
+	return tx.Commit()
 }
 func (s *Service) RequireGateScope(c context.Context, permission string, gateID int64) error {
 	return s.authz.RequireWithScope(c, permission, rbac.ScopeGate, gateID)

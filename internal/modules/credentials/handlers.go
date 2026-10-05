@@ -89,6 +89,10 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 		httpx.Fail(w, apperr.Conflict.With("gatepass is not eligible for credential issuance"))
 		return
 	}
+	if errors.Is(e, rbac.ErrForbidden) {
+		httpx.Fail(w, apperr.Forbidden)
+		return
+	}
 	if e != nil {
 		httpx.Fail(w, apperr.Database)
 		return
@@ -111,6 +115,10 @@ func (h *Handler) Verify(w http.ResponseWriter, r *http.Request) {
 	v, e := h.service.Verify(r.Context(), in.Token)
 	if errors.Is(e, ErrNotFound) || errors.Is(e, ErrUnavailable) {
 		httpx.Fail(w, apperr.Conflict.With("credential is invalid or unavailable"))
+		return
+	}
+	if errors.Is(e, rbac.ErrForbidden) {
+		httpx.Fail(w, apperr.Forbidden)
 		return
 	}
 	if e != nil {

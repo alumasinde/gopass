@@ -3,6 +3,7 @@ package rbac
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -16,6 +17,8 @@ const (
 	ScopeGate         = "GATE"
 	ScopeOwn          = "OWN"
 )
+
+var ErrForbidden = errors.New("rbac: forbidden")
 
 type Service struct{ DB *sql.DB }
 
@@ -65,6 +68,10 @@ func (s *Service) CanWithScope(ctx context.Context, code, scopeType string, reso
 		var n int
 		err = s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM user_roles ur JOIN role_permissions rp ON rp.role_id=ur.role_id JOIN permissions p ON p.id=rp.permission_id WHERE ur.user_id=? AND ur.organization_id=? AND p.code=? AND ur.is_active=1 AND (ur.scope_type='ORGANIZATION' OR (ur.scope_type='GATE' AND ur.gate_id=?))`, c.UserID, org, code, resourceID).Scan(&n)
 		return n > 0, err
+	case ScopeOwn:
+		var n int
+		err = s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM user_roles ur JOIN role_permissions rp ON rp.role_id=ur.role_id JOIN permissions p ON p.id=rp.permission_id WHERE ur.user_id=? AND ur.organization_id=? AND p.code=? AND ur.is_active=1 AND ur.scope_type='OWN' AND ur.user_id=?`, c.UserID, org, code, resourceID).Scan(&n)
+		return n > 0, err
 	default:
 		return false, fmt.Errorf("invalid scope type")
 	}
@@ -76,7 +83,7 @@ func (s *Service) Require(ctx context.Context, code string) error {
 		return err
 	}
 	if !ok {
-		return fmt.Errorf("forbidden")
+		return ErrForbidden
 	}
 	return nil
 }
@@ -86,7 +93,7 @@ func (s *Service) RequireWithScope(ctx context.Context, code, scopeType string, 
 		return err
 	}
 	if !ok {
-		return fmt.Errorf("forbidden")
+		return ErrForbidden
 	}
 	return nil
 }
