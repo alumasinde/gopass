@@ -23,10 +23,11 @@ func RegisterAPI(r chi.Router, d Dependencies) {
 		httpx.JSON(w, 200, map[string]any{"status": "ok", "service": "gopass"})
 	})
 	r.Route("/api/v1", func(r chi.Router) {
-		d.Auth.RegisterRoutes(r)
+		d.Auth.RegisterAuthRoutes(r)
+
 		r.Group(func(r chi.Router) {
 			r.Use(middleware.Bearer(d.Auth.Auth))
-			d.Auth.RegisterAuthRoutes(r)
+			d.Auth.RegisterMeRoute(r) // protected: /auth/me
 			d.Users.RegisterRoutes(r)
 			d.Organizations.RegisterRoutes(r)
 			d.Roles.RegisterRoutes(r)

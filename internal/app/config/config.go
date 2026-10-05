@@ -42,10 +42,6 @@ func csv(s string) []string {
 	return o
 }
 
-// DSN returns the MySQL DSN used by every binary (api, seed, migrate).
-// DB_DSN wins when set; otherwise it is built from DB_HOST, DB_PORT, DB_USER,
-// DB_PASSWORD and DB_NAME so that all binaries agree on the same database.
-// Building through mysql.Config escapes special characters in the password.
 func DSN() string {
 	if v := strings.TrimSpace(os.Getenv("DB_DSN")); v != "" {
 		return v
