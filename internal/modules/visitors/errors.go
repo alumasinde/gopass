@@ -3,6 +3,6 @@ package visitors
 import "errors"
 
 var (
-	ErrNotFound = errors.New("visitors: resource not found")
-	ErrInvalid  = errors.New("visitors: invalid request")
+	ErrNotFound = errors.New("visitor not found")
+	ErrInvalid  = errors.New("invalid visitor")
 )

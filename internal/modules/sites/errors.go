@@ -3,6 +3,7 @@ package sites
 import "errors"
 
 var (
-	ErrNotFound = errors.New("sites: resource not found")
-	ErrInvalid  = errors.New("sites: invalid request")
+	ErrNotFound = errors.New("site not found")
+	ErrExists   = errors.New("site already exists")
+	ErrInvalid  = errors.New("invalid site")
 )

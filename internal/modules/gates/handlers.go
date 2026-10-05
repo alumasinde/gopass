@@ -2,7 +2,7 @@ package gates
 
 import (
 	"database/sql"
-	"fmt"
+	"errors"
 	"github.com/alumasinde/gopass/internal/platform/apperr"
 	"github.com/alumasinde/gopass/internal/platform/audit"
 	"github.com/alumasinde/gopass/internal/platform/httpx"
@@ -10,84 +10,42 @@ import (
 	"github.com/alumasinde/gopass/internal/platform/tenancy"
 	"github.com/go-chi/chi/v5"
 	"net/http"
-	"strings"
 )
 
 type Handler struct {
-	db    *sql.DB
-	authz *rbac.Service
-	audit *audit.Service
+	authz   *rbac.Service
+	audit   *audit.Service
+	service *Service
 }
 
-func NewHandler(db *sql.DB, a *rbac.Service, au *audit.Service) *Handler { return &Handler{db, a, au} }
+func NewHandler(db *sql.DB, a *rbac.Service, au *audit.Service) *Handler {
+	return &Handler{a, au, NewService(db)}
+}
 func (h *Handler) registerRoutes(r chi.Router) {
-	r.Route("/gates", func(r chi.Router) { r.Get("/", h.List); r.Post("/", h.Create); r.Get("/{id}", h.Get) })
+	r.Route("/gates", func(r chi.Router) {
+		r.Get("/", h.List)
+		r.Post("/", h.Create)
+		r.Get("/{id}", h.Get)
+		r.Put("/{id}", h.Update)
+		r.Delete("/{id}", h.Delete)
+	})
 }
-
-var fields = []string{"id", "site_id", "name", "code", "is_active"}
-
 func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
 	if h.authz.Require(r.Context(), "gates.view") != nil {
 		httpx.Fail(w, apperr.Forbidden)
 		return
 	}
-	org, e := tenancy.ID(r.Context())
+	o, e := tenancy.ID(r.Context())
 	if e != nil {
 		httpx.Fail(w, apperr.TenantMissing)
 		return
 	}
-	rows, e := h.db.QueryContext(r.Context(), `SELECT id, site_id, name, code, is_active FROM gates WHERE organization_id=? ORDER BY id DESC LIMIT 100`, org)
+	v, e := h.service.List(r.Context(), o)
 	if e != nil {
 		httpx.Fail(w, apperr.Database)
 		return
 	}
-	defer rows.Close()
-	out := []map[string]any{}
-	for rows.Next() {
-		vals := make([]any, len(fields))
-		ptr := make([]any, len(fields))
-		for i := range vals {
-			ptr[i] = &vals[i]
-		}
-		if rows.Scan(ptr...) != nil {
-			continue
-		}
-		item := map[string]any{}
-		for i, f := range fields {
-			item[f] = vals[i]
-		}
-		out = append(out, item)
-	}
-	httpx.OK(w, out)
-}
-func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
-	if h.authz.Require(r.Context(), "gates.create") != nil {
-		httpx.Fail(w, apperr.Forbidden)
-		return
-	}
-	var in map[string]any
-	if httpx.Decode(r, &in) != nil {
-		httpx.Fail(w, apperr.InvalidJSON)
-		return
-	}
-	org, _ := tenancy.ID(r.Context())
-	args := []any{org}
-	for _, f := range []string{"site_id", "name", "code"} {
-		v, ok := in[f]
-		if !ok || v == nil || strings.TrimSpace(fmt.Sprint(v)) == "" {
-			httpx.Fail(w, apperr.InvalidRequest.With(f+" is required"))
-			return
-		}
-		args = append(args, v)
-	}
-	res, e := h.db.ExecContext(r.Context(), `INSERT INTO gates(organization_id,site_id, name, code,created_at,updated_at) VALUES (?,?, ?, ?,UTC_TIMESTAMP(),UTC_TIMESTAMP())`, args...)
-	if e != nil {
-		httpx.Fail(w, apperr.CreateFailed)
-		return
-	}
-	id, _ := res.LastInsertId()
-	h.audit.Record(r.Context(), audit.Entry{Action: "gate.created", ResourceType: "gate", ResourceID: id})
-	httpx.Created(w, map[string]any{"id": id})
+	httpx.OK(w, v)
 }
 func (h *Handler) Get(w http.ResponseWriter, r *http.Request) {
 	if h.authz.Require(r.Context(), "gates.view") != nil {
@@ -99,20 +57,100 @@ func (h *Handler) Get(w http.ResponseWriter, r *http.Request) {
 		httpx.Fail(w, apperr.InvalidID)
 		return
 	}
-	org, _ := tenancy.ID(r.Context())
-	row := h.db.QueryRowContext(r.Context(), `SELECT id, site_id, name, code, is_active FROM gates WHERE organization_id=? AND id=?`, org, id)
-	vals := make([]any, len(fields))
-	ptr := make([]any, len(fields))
-	for i := range vals {
-		ptr[i] = &vals[i]
-	}
-	if row.Scan(ptr...) != nil {
+	o, _ := tenancy.ID(r.Context())
+	v, e := h.service.Get(r.Context(), o, id)
+	if errors.Is(e, ErrNotFound) {
 		httpx.Fail(w, apperr.NotFound)
 		return
 	}
-	item := map[string]any{}
-	for i, f := range fields {
-		item[f] = vals[i]
+	if e != nil {
+		httpx.Fail(w, apperr.Database)
+		return
 	}
-	httpx.OK(w, item)
+	httpx.OK(w, v)
+}
+func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
+	if h.authz.Require(r.Context(), "gates.create") != nil {
+		httpx.Fail(w, apperr.Forbidden)
+		return
+	}
+	var in struct {
+		SiteID     int64 `json:"site_id"`
+		Name, Code string
+	}
+	if httpx.Decode(r, &in) != nil {
+		httpx.Fail(w, apperr.InvalidJSON)
+		return
+	}
+	o, _ := tenancy.ID(r.Context())
+	v, e := h.service.Create(r.Context(), o, in.SiteID, in.Name, in.Code)
+	if e != nil {
+		if errors.Is(e, ErrInvalid) {
+			httpx.Fail(w, apperr.InvalidRequest)
+			return
+		}
+		httpx.Fail(w, apperr.Conflict)
+		return
+	}
+	h.audit.Record(r.Context(), audit.Entry{Action: "gate.created", ResourceType: "gate", ResourceID: v.ID})
+	httpx.Created(w, v)
+}
+func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
+	if h.authz.Require(r.Context(), "gates.update") != nil {
+		httpx.Fail(w, apperr.Forbidden)
+		return
+	}
+	id, e := httpx.ID(chi.URLParam(r, "id"))
+	if e != nil {
+		httpx.Fail(w, apperr.InvalidID)
+		return
+	}
+	var in struct {
+		SiteID     int64 `json:"site_id"`
+		Name, Code string
+		IsActive   bool `json:"is_active"`
+	}
+	if httpx.Decode(r, &in) != nil {
+		httpx.Fail(w, apperr.InvalidJSON)
+		return
+	}
+	o, _ := tenancy.ID(r.Context())
+	e = h.service.Update(r.Context(), o, id, in.SiteID, in.Name, in.Code, in.IsActive)
+	if errors.Is(e, ErrNotFound) {
+		httpx.Fail(w, apperr.NotFound)
+		return
+	}
+	if errors.Is(e, ErrInvalid) {
+		httpx.Fail(w, apperr.InvalidRequest)
+		return
+	}
+	if e != nil {
+		httpx.Fail(w, apperr.Conflict)
+		return
+	}
+	h.audit.Record(r.Context(), audit.Entry{Action: "gate.updated", ResourceType: "gate", ResourceID: id})
+	httpx.OK(w, map[string]any{"id": id})
+}
+func (h *Handler) Delete(w http.ResponseWriter, r *http.Request) {
+	if h.authz.Require(r.Context(), "gates.delete") != nil {
+		httpx.Fail(w, apperr.Forbidden)
+		return
+	}
+	id, e := httpx.ID(chi.URLParam(r, "id"))
+	if e != nil {
+		httpx.Fail(w, apperr.InvalidID)
+		return
+	}
+	o, _ := tenancy.ID(r.Context())
+	e = h.service.Delete(r.Context(), o, id)
+	if errors.Is(e, ErrNotFound) {
+		httpx.Fail(w, apperr.NotFound)
+		return
+	}
+	if e != nil {
+		httpx.Fail(w, apperr.Database)
+		return
+	}
+	h.audit.Record(r.Context(), audit.Entry{Action: "gate.archived", ResourceType: "gate", ResourceID: id})
+	httpx.OK(w, map[string]any{"id": id})
 }

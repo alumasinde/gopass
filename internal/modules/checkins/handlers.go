@@ -2,7 +2,7 @@ package checkins
 
 import (
 	"database/sql"
-	"fmt"
+	"errors"
 	"github.com/alumasinde/gopass/internal/platform/apperr"
 	"github.com/alumasinde/gopass/internal/platform/audit"
 	"github.com/alumasinde/gopass/internal/platform/httpx"
@@ -10,84 +10,32 @@ import (
 	"github.com/alumasinde/gopass/internal/platform/tenancy"
 	"github.com/go-chi/chi/v5"
 	"net/http"
-	"strings"
 )
 
 type Handler struct {
-	db    *sql.DB
-	authz *rbac.Service
-	audit *audit.Service
+	authz   *rbac.Service
+	audit   *audit.Service
+	service *Service
 }
 
-func NewHandler(db *sql.DB, a *rbac.Service, au *audit.Service) *Handler { return &Handler{db, a, au} }
+func NewHandler(db *sql.DB, a *rbac.Service, au *audit.Service) *Handler {
+	return &Handler{a, au, NewService(db, a)}
+}
 func (h *Handler) registerRoutes(r chi.Router) {
 	r.Route("/check-ins", func(r chi.Router) { r.Get("/", h.List); r.Post("/", h.Create); r.Get("/{id}", h.Get) })
 }
-
-var fields = []string{"id", "gatepass_id", "gate_id", "checked_in_at"}
-
 func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
 	if h.authz.Require(r.Context(), "checkins.view") != nil {
 		httpx.Fail(w, apperr.Forbidden)
 		return
 	}
-	org, e := tenancy.ID(r.Context())
-	if e != nil {
-		httpx.Fail(w, apperr.TenantMissing)
-		return
-	}
-	rows, e := h.db.QueryContext(r.Context(), `SELECT id, gatepass_id, gate_id, checked_in_at FROM check_ins WHERE organization_id=? ORDER BY id DESC LIMIT 100`, org)
+	o, _ := tenancy.ID(r.Context())
+	v, e := h.service.List(r.Context(), o)
 	if e != nil {
 		httpx.Fail(w, apperr.Database)
 		return
 	}
-	defer rows.Close()
-	out := []map[string]any{}
-	for rows.Next() {
-		vals := make([]any, len(fields))
-		ptr := make([]any, len(fields))
-		for i := range vals {
-			ptr[i] = &vals[i]
-		}
-		if rows.Scan(ptr...) != nil {
-			continue
-		}
-		item := map[string]any{}
-		for i, f := range fields {
-			item[f] = vals[i]
-		}
-		out = append(out, item)
-	}
-	httpx.OK(w, out)
-}
-func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
-	if h.authz.Require(r.Context(), "checkins.perform") != nil {
-		httpx.Fail(w, apperr.Forbidden)
-		return
-	}
-	var in map[string]any
-	if httpx.Decode(r, &in) != nil {
-		httpx.Fail(w, apperr.InvalidJSON)
-		return
-	}
-	org, _ := tenancy.ID(r.Context())
-	args := []any{org}
-	for _, f := range []string{"gatepass_id", "gate_id"} {
-		v, ok := in[f]
-		if !ok || v == nil || strings.TrimSpace(fmt.Sprint(v)) == "" {
-			httpx.Fail(w, apperr.InvalidRequest.With(f+" is required"))
-			return
-		}
-		args = append(args, v)
-	}
-	res, e := h.db.ExecContext(r.Context(), `INSERT INTO check_ins(organization_id,gatepass_id, gate_id,created_at,updated_at) VALUES (?,?, ?,UTC_TIMESTAMP(),UTC_TIMESTAMP())`, args...)
-	if e != nil {
-		httpx.Fail(w, apperr.CreateFailed)
-		return
-	}
-	id, _ := res.LastInsertId()
-	h.audit.Record(r.Context(), audit.Entry{Action: "check_in.created", ResourceType: "check_in", ResourceID: id})
-	httpx.Created(w, map[string]any{"id": id})
+	httpx.OK(w, v)
 }
 func (h *Handler) Get(w http.ResponseWriter, r *http.Request) {
 	if h.authz.Require(r.Context(), "checkins.view") != nil {
@@ -99,20 +47,46 @@ func (h *Handler) Get(w http.ResponseWriter, r *http.Request) {
 		httpx.Fail(w, apperr.InvalidID)
 		return
 	}
-	org, _ := tenancy.ID(r.Context())
-	row := h.db.QueryRowContext(r.Context(), `SELECT id, gatepass_id, gate_id, checked_in_at FROM check_ins WHERE organization_id=? AND id=?`, org, id)
-	vals := make([]any, len(fields))
-	ptr := make([]any, len(fields))
-	for i := range vals {
-		ptr[i] = &vals[i]
-	}
-	if row.Scan(ptr...) != nil {
-		httpx.Fail(w, apperr.NotFound)
+	o, _ := tenancy.ID(r.Context())
+	v, e := h.service.List(r.Context(), o)
+	if e != nil {
+		httpx.Fail(w, apperr.Database)
 		return
 	}
-	item := map[string]any{}
-	for i, f := range fields {
-		item[f] = vals[i]
+	for _, x := range v {
+		if x.ID == id {
+			httpx.OK(w, x)
+			return
+		}
 	}
-	httpx.OK(w, item)
+	httpx.Fail(w, apperr.NotFound)
+}
+func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
+	if h.authz.Require(r.Context(), "checkins.perform") != nil {
+		httpx.Fail(w, apperr.Forbidden)
+		return
+	}
+	var in struct {
+		CredentialToken string `json:"credential_token"`
+		GateID          int64  `json:"gate_id"`
+	}
+	if httpx.Decode(r, &in) != nil || in.CredentialToken == "" || in.GateID < 1 {
+		httpx.Fail(w, apperr.InvalidRequest.With("credential_token and gate_id are required"))
+		return
+	}
+	o, _ := tenancy.ID(r.Context())
+	v, e := h.service.Create(r.Context(), o, in.CredentialToken, in.GateID)
+	switch {
+	case errors.Is(e, ErrNotFound):
+		httpx.Fail(w, apperr.NotFound)
+	case errors.Is(e, ErrAlready):
+		httpx.Fail(w, apperr.Conflict.With("visitor is already checked in"))
+	case errors.Is(e, ErrInvalid):
+		httpx.Fail(w, apperr.Conflict.With("credential or gatepass is not eligible for check-in"))
+	case e != nil:
+		httpx.Fail(w, apperr.Forbidden)
+	default:
+		h.audit.Record(r.Context(), audit.Entry{Action: "check_in.created", ResourceType: "check_in", ResourceID: v.ID})
+		httpx.Created(w, v)
+	}
 }

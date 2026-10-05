@@ -3,6 +3,8 @@ package approvals
 import "errors"
 
 var (
-	ErrNotFound = errors.New("approvals: resource not found")
-	ErrInvalid  = errors.New("approvals: invalid request")
+	ErrNotFound     = errors.New("approval request not found")
+	ErrInvalid      = errors.New("invalid approval request")
+	ErrAlreadyActed = errors.New("approval already acted")
+	ErrForbidden    = errors.New("not eligible to approve")
 )

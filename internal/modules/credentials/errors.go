@@ -3,6 +3,7 @@ package credentials
 import "errors"
 
 var (
-	ErrNotFound = errors.New("credentials: resource not found")
-	ErrInvalid  = errors.New("credentials: invalid request")
+	ErrNotFound    = errors.New("credential not found")
+	ErrInvalid     = errors.New("invalid credential")
+	ErrUnavailable = errors.New("credential unavailable")
 )

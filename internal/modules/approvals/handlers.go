@@ -2,7 +2,7 @@ package approvals
 
 import (
 	"database/sql"
-	"fmt"
+	"errors"
 	"github.com/alumasinde/gopass/internal/platform/apperr"
 	"github.com/alumasinde/gopass/internal/platform/audit"
 	"github.com/alumasinde/gopass/internal/platform/httpx"
@@ -10,84 +10,37 @@ import (
 	"github.com/alumasinde/gopass/internal/platform/tenancy"
 	"github.com/go-chi/chi/v5"
 	"net/http"
-	"strings"
 )
 
 type Handler struct {
-	db    *sql.DB
-	authz *rbac.Service
-	audit *audit.Service
+	authz   *rbac.Service
+	audit   *audit.Service
+	service *Service
 }
 
-func NewHandler(db *sql.DB, a *rbac.Service, au *audit.Service) *Handler { return &Handler{db, a, au} }
+func NewHandler(db *sql.DB, a *rbac.Service, au *audit.Service) *Handler {
+	return &Handler{a, au, NewService(db, a)}
+}
 func (h *Handler) registerRoutes(r chi.Router) {
-	r.Route("/approvals", func(r chi.Router) { r.Get("/", h.List); r.Post("/", h.Create); r.Get("/{id}", h.Get) })
+	r.Route("/approvals", func(r chi.Router) {
+		r.Get("/", h.List)
+		r.Get("/{id}", h.Get)
+		r.Post("/{id}/approve", h.Approve)
+		r.Post("/{id}/reject", h.Reject)
+	})
 }
-
-var fields = []string{"id", "gatepass_id", "status", "step_order", "acted_at"}
-
 func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
 	if h.authz.Require(r.Context(), "approvals.view") != nil {
 		httpx.Fail(w, apperr.Forbidden)
 		return
 	}
-	org, e := tenancy.ID(r.Context())
-	if e != nil {
-		httpx.Fail(w, apperr.TenantMissing)
-		return
-	}
-	rows, e := h.db.QueryContext(r.Context(), `SELECT id, gatepass_id, status, step_order, acted_at FROM approval_requests WHERE organization_id=? ORDER BY id DESC LIMIT 100`, org)
+	o, _ := tenancy.ID(r.Context())
+	v, e := h.service.List(r.Context(), o)
 	if e != nil {
 		httpx.Fail(w, apperr.Database)
 		return
 	}
-	defer rows.Close()
-	out := []map[string]any{}
-	for rows.Next() {
-		vals := make([]any, len(fields))
-		ptr := make([]any, len(fields))
-		for i := range vals {
-			ptr[i] = &vals[i]
-		}
-		if rows.Scan(ptr...) != nil {
-			continue
-		}
-		item := map[string]any{}
-		for i, f := range fields {
-			item[f] = vals[i]
-		}
-		out = append(out, item)
-	}
-	httpx.OK(w, out)
-}
-func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
-	if h.authz.Require(r.Context(), "approvals.approve") != nil {
-		httpx.Fail(w, apperr.Forbidden)
-		return
-	}
-	var in map[string]any
-	if httpx.Decode(r, &in) != nil {
-		httpx.Fail(w, apperr.InvalidJSON)
-		return
-	}
-	org, _ := tenancy.ID(r.Context())
-	args := []any{org}
-	for _, f := range []string{"gatepass_id", "status", "step_order"} {
-		v, ok := in[f]
-		if !ok || v == nil || strings.TrimSpace(fmt.Sprint(v)) == "" {
-			httpx.Fail(w, apperr.InvalidRequest.With(f+" is required"))
-			return
-		}
-		args = append(args, v)
-	}
-	res, e := h.db.ExecContext(r.Context(), `INSERT INTO approval_requests(organization_id,gatepass_id, status, step_order,created_at,updated_at) VALUES (?,?, ?, ?,UTC_TIMESTAMP(),UTC_TIMESTAMP())`, args...)
-	if e != nil {
-		httpx.Fail(w, apperr.CreateFailed)
-		return
-	}
-	id, _ := res.LastInsertId()
-	h.audit.Record(r.Context(), audit.Entry{Action: "approval_request.created", ResourceType: "approval_request", ResourceID: id})
-	httpx.Created(w, map[string]any{"id": id})
+	httpx.OK(w, v)
 }
 func (h *Handler) Get(w http.ResponseWriter, r *http.Request) {
 	if h.authz.Require(r.Context(), "approvals.view") != nil {
@@ -99,20 +52,57 @@ func (h *Handler) Get(w http.ResponseWriter, r *http.Request) {
 		httpx.Fail(w, apperr.InvalidID)
 		return
 	}
-	org, _ := tenancy.ID(r.Context())
-	row := h.db.QueryRowContext(r.Context(), `SELECT id, gatepass_id, status, step_order, acted_at FROM approval_requests WHERE organization_id=? AND id=?`, org, id)
-	vals := make([]any, len(fields))
-	ptr := make([]any, len(fields))
-	for i := range vals {
-		ptr[i] = &vals[i]
-	}
-	if row.Scan(ptr...) != nil {
-		httpx.Fail(w, apperr.NotFound)
+	o, _ := tenancy.ID(r.Context())
+	items, e := h.service.List(r.Context(), o)
+	if e != nil {
+		httpx.Fail(w, apperr.Database)
 		return
 	}
-	item := map[string]any{}
-	for i, f := range fields {
-		item[f] = vals[i]
+	for _, v := range items {
+		if v.ID == id {
+			httpx.OK(w, v)
+			return
+		}
 	}
-	httpx.OK(w, item)
+	httpx.Fail(w, apperr.NotFound)
+}
+func (h *Handler) Approve(w http.ResponseWriter, r *http.Request) { h.act(w, r, true) }
+func (h *Handler) Reject(w http.ResponseWriter, r *http.Request) {
+	if h.authz.Require(r.Context(), "approvals.reject") != nil {
+		httpx.Fail(w, apperr.Forbidden)
+		return
+	}
+	h.act(w, r, false)
+}
+func (h *Handler) act(w http.ResponseWriter, r *http.Request, approve bool) {
+	id, e := httpx.ID(chi.URLParam(r, "id"))
+	if e != nil {
+		httpx.Fail(w, apperr.InvalidID)
+		return
+	}
+	var in struct {
+		Note string `json:"note"`
+	}
+	if r.Body != nil {
+		_ = httpx.Decode(r, &in)
+	}
+	o, _ := tenancy.ID(r.Context())
+	e = h.service.Act(r.Context(), o, id, approve, in.Note)
+	switch {
+	case errors.Is(e, ErrNotFound):
+		httpx.Fail(w, apperr.NotFound)
+	case errors.Is(e, ErrAlreadyActed):
+		httpx.Fail(w, apperr.Conflict.With("approval request already acted on"))
+	case errors.Is(e, ErrForbidden):
+		httpx.Fail(w, apperr.Forbidden)
+	case e != nil:
+		httpx.Fail(w, apperr.Database)
+	default:
+		action := "approval.rejected"
+		if approve {
+			action = "approval.approved"
+		}
+		h.audit.Record(r.Context(), audit.Entry{Action: action, ResourceType: "approval_request", ResourceID: id})
+		httpx.OK(w, map[string]any{"id": id, "status": "recorded"})
+	}
 }

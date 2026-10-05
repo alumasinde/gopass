@@ -64,6 +64,48 @@ func main() {
 	if e != nil {
 		log.Fatal(e)
 	}
+
+	var siteID int64
+	if e = tx.QueryRow(`SELECT id FROM sites WHERE organization_id=? AND code='MAIN'`, oid).Scan(&siteID); e != nil {
+		r, er := tx.Exec(`INSERT INTO sites(organization_id,name,code,is_active,created_at,updated_at) VALUES(?,?,?,1,UTC_TIMESTAMP(),UTC_TIMESTAMP())`, oid, "Main Site", "MAIN")
+		if er != nil {
+			log.Fatal(er)
+		}
+		siteID, _ = r.LastInsertId()
+	}
+	var gateID int64
+	if e = tx.QueryRow(`SELECT id FROM gates WHERE organization_id=? AND code='MAIN-GATE'`, oid).Scan(&gateID); e != nil {
+		r, er := tx.Exec(`INSERT INTO gates(organization_id,site_id,name,code,is_active,created_at,updated_at) VALUES(?,?,?, ?,1,UTC_TIMESTAMP(),UTC_TIMESTAMP())`, oid, siteID, "Main Gate", "MAIN-GATE")
+		if er != nil {
+			log.Fatal(er)
+		}
+		gateID, _ = r.LastInsertId()
+	}
+	var passTypeID int64
+	if e = tx.QueryRow(`SELECT id FROM pass_types WHERE organization_id=? AND code='VISITOR'`, oid).Scan(&passTypeID); e != nil {
+		r, er := tx.Exec(`INSERT INTO pass_types(organization_id,name,code,requires_approval,validity_minutes,is_active,created_at,updated_at) VALUES(?,?,?,1,480,1,UTC_TIMESTAMP(),UTC_TIMESTAMP())`, oid, "Visitor Pass", "VISITOR")
+		if er != nil {
+			log.Fatal(er)
+		}
+		passTypeID, _ = r.LastInsertId()
+	}
+	var workflowID int64
+	if e = tx.QueryRow(`SELECT id FROM approval_workflows WHERE organization_id=? AND name='Default Visitor Approval'`, oid).Scan(&workflowID); e != nil {
+		r, er := tx.Exec(`INSERT INTO approval_workflows(organization_id,pass_type_id,name,is_active,created_at,updated_at) VALUES(?,?,?,1,UTC_TIMESTAMP(),UTC_TIMESTAMP())`, oid, passTypeID, "Default Visitor Approval")
+		if er != nil {
+			log.Fatal(er)
+		}
+		workflowID, _ = r.LastInsertId()
+		var pid int64
+		if er = tx.QueryRow(`SELECT id FROM permissions WHERE code='approvals.approve'`).Scan(&pid); er != nil {
+			log.Fatal(er)
+		}
+		_, er = tx.Exec(`INSERT INTO approval_workflow_steps(workflow_id,step_order,name,permission_code,scope_type,is_active,created_at,updated_at) VALUES(?,1,'Security Approval','approvals.approve','GATE',1,UTC_TIMESTAMP(),UTC_TIMESTAMP())`, workflowID)
+		if er != nil {
+			log.Fatal(er)
+		}
+	}
+	_ = gateID
 	if e = tx.Commit(); e != nil {
 		log.Fatal(e)
 	}

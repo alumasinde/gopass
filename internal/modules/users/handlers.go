@@ -39,8 +39,10 @@ func (h *Handler) registerRoutes(r chi.Router) {
 
 func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 	var in struct {
-		Email    string `json:"email"`
-		Password string `json:"password"`
+		Email            string `json:"email"`
+		Password         string `json:"password"`
+		OrganizationID   int64  `json:"organization_id"`
+		OrganizationSlug string `json:"organization_slug"`
 	}
 	if httpx.Decode(r, &in) != nil || in.Email == "" || in.Password == "" {
 		httpx.Fail(w, apperr.InvalidRequest.With("email and password are required"))
@@ -49,8 +51,14 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 
 	org, e := tenancy.ID(r.Context())
 	if e != nil {
-		httpx.Fail(w, apperr.TenantMissing)
-		return
+		org = in.OrganizationID
+		if org < 1 && in.OrganizationSlug != "" {
+			e = h.db.QueryRowContext(r.Context(), `SELECT id FROM organizations WHERE slug=? AND is_active=1`, in.OrganizationSlug).Scan(&org)
+		}
+		if org < 1 || e != nil {
+			httpx.Fail(w, apperr.InvalidRequest.With("organization_id or organization_slug is required"))
+			return
+		}
 	}
 
 	user, accessToken, refreshToken, e := h.Service.Authenticate(r.Context(), org, in.Email, in.Password)
@@ -63,7 +71,9 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	h.audit.Record(r.Context(), audit.Entry{Action: "user.login", ResourceType: "user", ResourceID: user.ID})
+	if h.audit != nil {
+		h.audit.Record(r.Context(), audit.Entry{Action: "user.login", ResourceType: "user", ResourceID: user.ID})
+	}
 	httpx.OK(w, map[string]any{
 		"user":          map[string]any{"id": user.ID, "first_name": user.FirstName, "last_name": user.LastName, "email": user.Email},
 		"access_token":  accessToken,
@@ -87,6 +97,25 @@ func (h *Handler) Refresh(w http.ResponseWriter, r *http.Request) {
 	}
 
 	httpx.OK(w, map[string]any{"access_token": newToken})
+}
+
+func (h *Handler) Me(w http.ResponseWriter, r *http.Request) {
+	claims, ok := auth.From(r.Context())
+	if !ok {
+		httpx.Fail(w, apperr.Unauthorized)
+		return
+	}
+	org, err := tenancy.ID(r.Context())
+	if err != nil || org != claims.OrgID {
+		httpx.Fail(w, apperr.Unauthorized)
+		return
+	}
+	user, err := h.Service.GetUser(r.Context(), org, claims.UserID)
+	if err != nil || user == nil {
+		httpx.Fail(w, apperr.NotFound)
+		return
+	}
+	httpx.OK(w, map[string]any{"id": user.ID, "organization_id": org, "first_name": user.FirstName, "last_name": user.LastName, "email": user.Email, "is_active": user.IsActive})
 }
 
 func (h *Handler) List(w http.ResponseWriter, r *http.Request) {

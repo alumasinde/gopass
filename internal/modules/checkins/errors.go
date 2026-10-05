@@ -3,6 +3,7 @@ package checkins
 import "errors"
 
 var (
-	ErrNotFound = errors.New("checkins: resource not found")
-	ErrInvalid  = errors.New("checkins: invalid request")
+	ErrInvalid  = errors.New("invalid check-in")
+	ErrNotFound = errors.New("gatepass or credential not found")
+	ErrAlready  = errors.New("already checked in")
 )

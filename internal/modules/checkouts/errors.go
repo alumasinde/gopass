@@ -2,7 +2,8 @@ package checkouts
 
 import "errors"
 
+
 var (
-	ErrNotFound = errors.New("checkouts: resource not found")
-	ErrInvalid  = errors.New("checkouts: invalid request")
+	ErrInvalid  = errors.New("invalid check-out")
+	ErrNotFound = errors.New("active check-in not found")
 )
