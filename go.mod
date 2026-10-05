@@ -1,4 +1,4 @@
-module github.com/alumasinde/passnow
+module github.com/alumasinde/gopass
 
 go 1.23.0
 

@@ -7,7 +7,7 @@ Run `go test ./...` after dependencies are available. The suite should include s
 Use a dedicated database and DSN; never point tests at development/production data. Example:
 
 ```powershell
-$env:DB_DSN='testuser:testpass@tcp(127.0.0.1:3306)/passnow_test?parseTime=true&charset=utf8mb4'
+$env:DB_DSN='testuser:testpass@tcp(127.0.0.1:3306)/gopass_test?parseTime=true&charset=utf8mb4'
 go test ./... -count=1
 ```
 

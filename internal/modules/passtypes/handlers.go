@@ -2,10 +2,10 @@ package passtypes
 
 import (
 	"database/sql"
-	"github.com/alumasinde/passnow/internal/platform/audit"
-	"github.com/alumasinde/passnow/internal/platform/httpx"
-	"github.com/alumasinde/passnow/internal/platform/rbac"
-	"github.com/alumasinde/passnow/internal/platform/tenancy"
+	"github.com/alumasinde/gopass/internal/platform/audit"
+	"github.com/alumasinde/gopass/internal/platform/httpx"
+	"github.com/alumasinde/gopass/internal/platform/rbac"
+	"github.com/alumasinde/gopass/internal/platform/tenancy"
 	"github.com/go-chi/chi/v5"
 	"net/http"
 	"strings"

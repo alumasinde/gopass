@@ -2,9 +2,9 @@ package middleware
 
 import (
 	"context"
-	"github.com/alumasinde/passnow/internal/platform/auth"
-	"github.com/alumasinde/passnow/internal/platform/httpx"
-	"github.com/alumasinde/passnow/internal/platform/tenancy"
+	"github.com/alumasinde/gopass/internal/platform/auth"
+	"github.com/alumasinde/gopass/internal/platform/httpx"
+	"github.com/alumasinde/gopass/internal/platform/tenancy"
 	"github.com/google/uuid"
 	"log/slog"
 	"net/http"

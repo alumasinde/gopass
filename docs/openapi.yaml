@@ -1,6 +1,6 @@
 openapi: 3.0.3
 info:
-  title: PassNow API
+  title: GoPass API
   version: 1.0.0
   description: Multi-tenant gatepass and visitor management API.
 servers:
@@ -16,27 +16,72 @@ paths:
         required: true
         content:
           application/json:
-            schema: {type: object, required: [email,password], properties: {email: {type: string, format: email}, password: {type: string, format: password}}}
-      responses: {'200': {description: Authenticated}, '401': {description: Invalid credentials}}
+            schema:
+              {
+                type: object,
+                required: [email, password],
+                properties:
+                  {
+                    email: { type: string, format: email },
+                    password: { type: string, format: password },
+                  },
+              }
+      responses:
+        {
+          "200": { description: Authenticated },
+          "401": { description: Invalid credentials },
+        }
   /auth/refresh:
     post:
       security: []
       summary: Refresh an access token
-      responses: {'200': {description: New access token}}
+      responses: { "200": { description: New access token } }
   /me:
     get:
       summary: Current user
-      responses: {'200': {description: Current user}}
+      responses: { "200": { description: Current user } }
   /visitors:
-    get: {summary: List visitors, responses: {'200': {description: Visitor list}, '403': {description: Forbidden}}}
-    post: {summary: Register visitor, responses: {'201': {description: Created}, '403': {description: Forbidden}}}
+    get:
+      {
+        summary: List visitors,
+        responses:
+          {
+            "200": { description: Visitor list },
+            "403": { description: Forbidden },
+          },
+      }
+    post:
+      {
+        summary: Register visitor,
+        responses:
+          {
+            "201": { description: Created },
+            "403": { description: Forbidden },
+          },
+      }
   /gatepasses:
-    get: {summary: List gatepasses, responses: {'200': {description: Gatepass list}}}
-    post: {summary: Create gatepass, responses: {'201': {description: Created}}}
+    get:
+      {
+        summary: List gatepasses,
+        responses: { "200": { description: Gatepass list } },
+      }
+    post:
+      {
+        summary: Create gatepass,
+        responses: { "201": { description: Created } },
+      }
   /check-ins:
-    post: {summary: Check a visitor in, responses: {'201': {description: Created}}}
+    post:
+      {
+        summary: Check a visitor in,
+        responses: { "201": { description: Created } },
+      }
   /check-outs:
-    post: {summary: Check a visitor out, responses: {'201': {description: Created}}}
+    post:
+      {
+        summary: Check a visitor out,
+        responses: { "201": { description: Created } },
+      }
 components:
   securitySchemes:
     bearerAuth:

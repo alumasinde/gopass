@@ -4,8 +4,8 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"github.com/alumasinde/passnow/internal/platform/auth"
-	"github.com/alumasinde/passnow/internal/platform/tenancy"
+	"github.com/alumasinde/gopass/internal/platform/auth"
+	"github.com/alumasinde/gopass/internal/platform/tenancy"
 )
 
 type Service struct{ DB *sql.DB }

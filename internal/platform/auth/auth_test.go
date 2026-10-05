@@ -19,7 +19,7 @@ func TestPasswordHashAndCheck(t *testing.T) {
 }
 
 func TestAccessAndRefreshTokens(t *testing.T) {
-	s := New("01234567890123456789012345678901", "passnow", time.Minute, time.Hour)
+	s := New("01234567890123456789012345678901", "gopass", time.Minute, time.Hour)
 	access, err := s.Issue(10, 20, false)
 	if err != nil {
 		t.Fatal(err)

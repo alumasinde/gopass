@@ -3,9 +3,9 @@ package main
 import (
 	"context"
 	"fmt"
-	"github.com/alumasinde/passnow/internal/app/config"
-	"github.com/alumasinde/passnow/internal/app/database"
-	"github.com/alumasinde/passnow/internal/platform/auth"
+	"github.com/alumasinde/gopass/internal/app/config"
+	"github.com/alumasinde/gopass/internal/app/database"
+	"github.com/alumasinde/gopass/internal/platform/auth"
 	"log"
 	"os"
 	"strings"

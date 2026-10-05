@@ -1,8 +1,8 @@
 package main
 
 import (
-	"github.com/alumasinde/passnow/internal/app"
-	"github.com/alumasinde/passnow/internal/app/config"
+	"github.com/alumasinde/gopass/internal/app"
+	"github.com/alumasinde/gopass/internal/app/config"
 	"log"
 )
 

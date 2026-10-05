@@ -20,7 +20,7 @@ func Load() Config {
 	p, _ := strconv.Atoi(env("HTTP_PORT", "8080"))
 	a, _ := time.ParseDuration(env("JWT_ACCESS_TTL", "15m"))
 	r, _ := time.ParseDuration(env("JWT_REFRESH_TTL", "168h"))
-	return Config{AppName: env("APP_NAME", "passnow"), AppEnv: env("APP_ENV", "development"), AppURL: env("APP_URL", "http://localhost:8080"), Host: env("HTTP_HOST", "0.0.0.0"), Port: p, DBDSN: env("DB_DSN", ""), JWTSecret: env("JWT_SECRET", ""), JWTIssuer: env("JWT_ISSUER", "passnow"), AccessTTL: a, RefreshTTL: r, CORS: csv(env("CORS_ALLOWED_ORIGINS", "")), LogLevel: env("LOG_LEVEL", "INFO")}
+	return Config{AppName: env("APP_NAME", "gopass"), AppEnv: env("APP_ENV", "development"), AppURL: env("APP_URL", "http://localhost:8080"), Host: env("HTTP_HOST", "0.0.0.0"), Port: p, DBDSN: env("DB_DSN", ""), JWTSecret: env("JWT_SECRET", ""), JWTIssuer: env("JWT_ISSUER", "gopass"), AccessTTL: a, RefreshTTL: r, CORS: csv(env("CORS_ALLOWED_ORIGINS", "")), LogLevel: env("LOG_LEVEL", "INFO")}
 }
 func env(k, d string) string {
 	if v := os.Getenv(k); v != "" {
