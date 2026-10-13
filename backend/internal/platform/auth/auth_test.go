@@ -72,3 +72,29 @@ func TestAccessAndRefreshTokens(t *testing.T) {
 		t.Fatal("refresh token accepted as access token")
 	}
 }
+
+func TestPlatformTokensAreIsolatedFromTenantTokens(t *testing.T) {
+	s := New("01234567890123456789012345678901", "gopass", time.Minute, time.Hour)
+	sid := "00112233445566778899aabbccddeeff"
+	platformToken, err := s.IssuePlatformAccess(7, sid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Access(platformToken); err == nil {
+		t.Fatal("platform token accepted by tenant access parser")
+	}
+	claims, err := s.PlatformAccess(platformToken)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if claims.UserID != 7 || claims.OrgID != 0 || claims.PrincipalType != "platform" {
+		t.Fatalf("unexpected platform claims: %+v", claims)
+	}
+	tenantToken, err := s.IssueInSession(8, 9, false, sid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.PlatformAccess(tenantToken); err == nil {
+		t.Fatal("tenant token accepted by platform access parser")
+	}
+}

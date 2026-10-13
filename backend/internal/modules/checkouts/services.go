@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"github.com/alumasinde/gopass/internal/modules/notifications"
 	"github.com/alumasinde/gopass/internal/platform/audit"
 	"github.com/alumasinde/gopass/internal/platform/auth"
 	"github.com/alumasinde/gopass/internal/platform/rbac"
@@ -95,6 +96,9 @@ func (s *Service) Create(c context.Context, o int64, gp, gate int64) (*CheckOut,
 		if err = s.audit.RecordTx(c, tx, audit.Entry{OrganizationID: o, Action: "gatepass.checked_out", ResourceType: "gatepass", ResourceID: gp, OldValues: map[string]any{"status": "CHECKED_IN"}, NewValues: map[string]any{"status": "CHECKED_OUT"}}); err != nil {
 			return nil, err
 		}
+	}
+	if err = notifications.EnqueueVisitorTx(c, tx, o, gp, "visitor.departed", "Visitor check-out recorded", map[string]any{"gatepass_id": gp, "gate_id": gate, "status": "CHECKED_OUT"}); err != nil {
+		return nil, err
 	}
 	if err = tx.Commit(); err != nil {
 		return nil, err

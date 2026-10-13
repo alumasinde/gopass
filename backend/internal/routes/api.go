@@ -7,15 +7,17 @@ import (
 	"github.com/alumasinde/gopass/internal/modules/users"
 	"github.com/alumasinde/gopass/internal/platform/audit"
 	"github.com/alumasinde/gopass/internal/platform/httpx"
+	"github.com/alumasinde/gopass/internal/platform/platformadmin"
 	"github.com/alumasinde/gopass/internal/platform/rbac"
 	"github.com/go-chi/chi/v5"
 )
 
 type Dependencies struct {
-	Auth                                                                                                                    *users.Handler
-	Authz                                                                                                                   *rbac.Service
-	Audit                                                                                                                   *audit.Service
-	Users, Organizations, Roles, Sites, Gates, Visitors, Gatepasses, Approvals, Credentials, Checkins, Checkouts, PassTypes interface{ RegisterRoutes(chi.Router) }
+	Auth                                                                                                                                   *users.Handler
+	Authz                                                                                                                                  *rbac.Service
+	Audit                                                                                                                                  *audit.Service
+	Users, Organizations, Roles, Sites, Gates, Visitors, Gatepasses, Approvals, Credentials, Checkins, Checkouts, PassTypes, Notifications interface{ RegisterRoutes(chi.Router) }
+	Platform                                                                                                                               *platformadmin.Handler
 }
 
 func RegisterAPI(r chi.Router, d Dependencies) {
@@ -24,6 +26,9 @@ func RegisterAPI(r chi.Router, d Dependencies) {
 	})
 	r.Route("/api/v1", func(r chi.Router) {
 		d.Auth.RegisterAuthRoutes(r)
+		if d.Platform != nil {
+			d.Platform.RegisterRoutes(r)
+		}
 
 		r.Group(func(r chi.Router) {
 			r.Use(middleware.Bearer(d.Auth.Auth, d.Auth.Service))
@@ -40,6 +45,9 @@ func RegisterAPI(r chi.Router, d Dependencies) {
 			d.Checkins.RegisterRoutes(r)
 			d.Checkouts.RegisterRoutes(r)
 			d.PassTypes.RegisterRoutes(r)
+			if d.Notifications != nil {
+				d.Notifications.RegisterRoutes(r)
+			}
 		})
 	})
 }

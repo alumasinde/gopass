@@ -12,10 +12,11 @@ import (
 )
 
 type Claims struct {
-	UserID    int64  `json:"uid"`
-	OrgID     int64  `json:"oid"`
-	Type      string `json:"typ"`
-	SessionID string `json:"sid"`
+	UserID        int64  `json:"uid"`
+	OrgID         int64  `json:"oid"`
+	Type          string `json:"typ"`
+	SessionID     string `json:"sid"`
+	PrincipalType string `json:"prn"`
 	jwt.RegisteredClaims
 }
 type key string
@@ -68,7 +69,7 @@ func (s *Service) IssueInSession(uid, oid int64, refresh bool, sessionID string)
 	if _, err := rand.Read(nonce[:]); err != nil {
 		return "", err
 	}
-	c := Claims{UserID: uid, OrgID: oid, Type: t, SessionID: sessionID, RegisteredClaims: jwt.RegisteredClaims{Issuer: s.Issuer, Subject: "user", ID: hex.EncodeToString(nonce[:]), IssuedAt: jwt.NewNumericDate(n), ExpiresAt: jwt.NewNumericDate(n.Add(ttl))}}
+	c := Claims{UserID: uid, OrgID: oid, Type: t, SessionID: sessionID, PrincipalType: "user", RegisteredClaims: jwt.RegisteredClaims{Issuer: s.Issuer, Subject: "user", ID: hex.EncodeToString(nonce[:]), IssuedAt: jwt.NewNumericDate(n), ExpiresAt: jwt.NewNumericDate(n.Add(ttl))}}
 	return jwt.NewWithClaims(jwt.SigningMethodHS256, c).SignedString([]byte(s.Secret))
 }
 func (s *Service) Parse(tok string) (*Claims, error) {
@@ -89,10 +90,34 @@ func (s *Service) Parse(tok string) (*Claims, error) {
 }
 func (s *Service) Access(tok string) (*Claims, error) {
 	c, e := s.Parse(tok)
-	if e != nil || c.Type != "access" || c.SessionID == "" {
+	if e != nil || c.Type != "access" || c.SessionID == "" || c.PrincipalType != "user" {
 		return nil, errors.New("invalid access token")
 	}
 	return c, nil
 }
+
+// IssuePlatformAccess issues a short-lived platform-administrator token. Platform
+// principals deliberately have no organization ID and are accepted only by the
+// dedicated platform middleware.
+func (s *Service) IssuePlatformAccess(uid int64, sessionID string) (string, error) {
+	if uid < 1 || sessionID == "" {
+		return "", errors.New("invalid platform subject or session")
+	}
+	var nonce [16]byte
+	if _, err := rand.Read(nonce[:]); err != nil {
+		return "", err
+	}
+	now := time.Now()
+	c := Claims{UserID: uid, OrgID: 0, Type: "access", SessionID: sessionID, PrincipalType: "platform", RegisteredClaims: jwt.RegisteredClaims{Issuer: s.Issuer, Subject: "platform_user", ID: hex.EncodeToString(nonce[:]), IssuedAt: jwt.NewNumericDate(now), ExpiresAt: jwt.NewNumericDate(now.Add(s.AccessTTL))}}
+	return jwt.NewWithClaims(jwt.SigningMethodHS256, c).SignedString([]byte(s.Secret))
+}
+func (s *Service) PlatformAccess(tok string) (*Claims, error) {
+	c, err := s.Parse(tok)
+	if err != nil || c.Type != "access" || c.PrincipalType != "platform" || c.UserID < 1 || c.OrgID != 0 || c.SessionID == "" {
+		return nil, errors.New("invalid platform access token")
+	}
+	return c, nil
+}
+
 func With(ctx context.Context, c *Claims) context.Context { return context.WithValue(ctx, Key, c) }
 func From(ctx context.Context) (*Claims, bool)            { c, ok := ctx.Value(Key).(*Claims); return c, ok }

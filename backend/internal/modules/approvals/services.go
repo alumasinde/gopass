@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 
+	"github.com/alumasinde/gopass/internal/modules/notifications"
 	"github.com/alumasinde/gopass/internal/platform/audit"
 	"github.com/alumasinde/gopass/internal/platform/auth"
 	"github.com/alumasinde/gopass/internal/platform/rbac"
@@ -133,6 +134,9 @@ func (s *Service) Act(c context.Context, o, id int64, approve bool, note string)
 					return e
 				}
 			}
+			if e = notifications.EnqueueVisitorTx(c, tx, o, gpID, "approval.approved", "Your gatepass request was approved", map[string]any{"gatepass_id": gpID, "status": "APPROVED"}); e != nil {
+				return e
+			}
 		} else if err != nil {
 			return err
 		} else {
@@ -183,6 +187,9 @@ func (s *Service) Act(c context.Context, o, id int64, approve bool, note string)
 			if err = s.audit.RecordTx(c, tx, audit.Entry{OrganizationID: o, Action: "approval.rejected", ResourceType: "approval_request", ResourceID: id, OldValues: map[string]any{"status": "PENDING"}, NewValues: map[string]any{"status": "REJECTED", "acted_by": claims.UserID, "decision_note": note}}); err != nil {
 				return err
 			}
+		}
+		if err = notifications.EnqueueVisitorTx(c, tx, o, gpID, "approval.rejected", "Your gatepass request was rejected", map[string]any{"gatepass_id": gpID, "status": "REJECTED"}); err != nil {
+			return err
 		}
 	}
 	return tx.Commit()

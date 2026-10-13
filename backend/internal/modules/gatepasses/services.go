@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/alumasinde/gopass/internal/modules/notifications"
 	"github.com/alumasinde/gopass/internal/platform/audit"
 	"github.com/alumasinde/gopass/internal/platform/auth"
 	"github.com/alumasinde/gopass/internal/platform/rbac"
@@ -291,6 +292,20 @@ func (s *Service) Submit(c context.Context, o, id int64) (string, error) {
 			return "", err
 		}
 	}
+	event := "gatepass.submitted"
+	subject := "Your gatepass request was submitted"
+	if next == StatusPendingApproval {
+		event = "approval.requested"
+		subject = "Your gatepass is awaiting approval"
+	}
+	if err = notifications.EnqueueVisitorTx(c, tx, o, id, event, subject, map[string]any{"gatepass_id": id, "status": next}); err != nil {
+		return "", err
+	}
+	if next == StatusPendingApproval {
+		if err = notifications.EnqueueApproversTx(c, tx, o, id, gateID); err != nil {
+			return "", err
+		}
+	}
 	if err = tx.Commit(); err != nil {
 		return "", err
 	}
@@ -369,6 +384,11 @@ func (s *Service) Transition(c context.Context, o, id int64, to string) error {
 			action = "gatepass.revoked"
 		}
 		if err = s.audit.RecordTx(c, tx, audit.Entry{OrganizationID: o, Action: action, ResourceType: "gatepass", ResourceID: id, OldValues: map[string]any{"status": from}, NewValues: map[string]any{"status": to}}); err != nil {
+			return err
+		}
+	}
+	if to == StatusIssued {
+		if err = notifications.EnqueueVisitorTx(c, tx, o, id, "gatepass.issued", "Your gatepass has been issued", map[string]any{"gatepass_id": id, "status": to}); err != nil {
 			return err
 		}
 	}

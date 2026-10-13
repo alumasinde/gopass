@@ -8,6 +8,7 @@ import (
 	"errors"
 	"time"
 
+	"github.com/alumasinde/gopass/internal/modules/notifications"
 	"github.com/alumasinde/gopass/internal/platform/audit"
 	"github.com/alumasinde/gopass/internal/platform/auth"
 	"github.com/alumasinde/gopass/internal/platform/rbac"
@@ -124,6 +125,9 @@ func (s *Service) Create(c context.Context, o int64, token string, gate int64) (
 		if err = s.audit.RecordTx(c, tx, audit.Entry{OrganizationID: o, Action: "gatepass.checked_in", ResourceType: "gatepass", ResourceID: gpID, OldValues: map[string]any{"status": "ISSUED"}, NewValues: map[string]any{"status": "CHECKED_IN"}}); err != nil {
 			return nil, err
 		}
+	}
+	if err = notifications.EnqueueVisitorTx(c, tx, o, gpID, "visitor.arrived", "Visitor check-in recorded", map[string]any{"gatepass_id": gpID, "gate_id": gate, "status": "CHECKED_IN"}); err != nil {
+		return nil, err
 	}
 	if err = tx.Commit(); err != nil {
 		return nil, err

@@ -20,6 +20,7 @@ import (
 	"github.com/alumasinde/gopass/internal/modules/credentials"
 	"github.com/alumasinde/gopass/internal/modules/gatepasses"
 	"github.com/alumasinde/gopass/internal/modules/gates"
+	"github.com/alumasinde/gopass/internal/modules/notifications"
 	"github.com/alumasinde/gopass/internal/modules/organizations"
 	"github.com/alumasinde/gopass/internal/modules/passtypes"
 	"github.com/alumasinde/gopass/internal/modules/roles"
@@ -28,15 +29,18 @@ import (
 	"github.com/alumasinde/gopass/internal/modules/visitors"
 	"github.com/alumasinde/gopass/internal/platform/audit"
 	"github.com/alumasinde/gopass/internal/platform/auth"
+	"github.com/alumasinde/gopass/internal/platform/platformadmin"
 	"github.com/alumasinde/gopass/internal/platform/rbac"
 	"github.com/alumasinde/gopass/internal/routes"
 	"github.com/go-chi/chi/v5"
 )
 
 type App struct {
-	db     interface{ Close() error }
-	server *http.Server
-	log    *slog.Logger
+	db                 interface{ Close() error }
+	server             *http.Server
+	log                *slog.Logger
+	notificationWorker *notifications.Worker
+	tenantProvisioner  *platformadmin.Provisioner
 }
 
 func New(cfg config.Config) (*App, error) {
@@ -52,25 +56,32 @@ func New(cfg config.Config) (*App, error) {
 	au := audit.New(db, l)
 	authHandler := users.NewAuthService(db, tokens, au)
 	usersHandler := users.NewHandler(db, az, au)
-	d := routes.Dependencies{Auth: authHandler, Authz: az, Audit: au, Users: usersHandler, Organizations: organizations.NewHandler(db, az, au), Roles: roles.NewHandler(db, az, au), Sites: sites.NewHandler(db, az, au), Gates: gates.NewHandler(db, az, au), Visitors: visitors.NewHandler(db, az, au), Gatepasses: gatepasses.NewHandler(db, az, au), Approvals: approvals.NewHandler(db, az, au), Credentials: credentials.NewHandler(db, az, au), Checkins: checkins.NewHandler(db, az, au), Checkouts: checkouts.NewHandler(db, az, au), PassTypes: passtypes.NewHandler(db, az, au)}
+	d := routes.Dependencies{Auth: authHandler, Authz: az, Audit: au, Users: usersHandler, Organizations: organizations.NewHandler(db, az, au), Roles: roles.NewHandler(db, az, au), Sites: sites.NewHandler(db, az, au), Gates: gates.NewHandler(db, az, au), Visitors: visitors.NewHandler(db, az, au), Gatepasses: gatepasses.NewHandler(db, az, au), Approvals: approvals.NewHandler(db, az, au), Credentials: credentials.NewHandler(db, az, au), Checkins: checkins.NewHandler(db, az, au), Checkouts: checkouts.NewHandler(db, az, au), PassTypes: passtypes.NewHandler(db, az, au), Notifications: notifications.NewHandler(db, az), Platform: platformadmin.New(db, tokens)}
 	r := chi.NewRouter()
 	//r.Use(middleware.Request, middleware.Security, middleware.CORS(cfg.CORS), middleware.Log(l), middleware.Recover(l), middleware.Bearer(tokens, authHandler.Service))
 	r.Use(middleware.Request, middleware.Security, middleware.CORS(cfg.CORS), middleware.Log(l), middleware.Recover(l))
 	routes.RegisterAPI(r, d)
-	return &App{db: db, server: &http.Server{Addr: fmt.Sprintf("%s:%d", cfg.Host, cfg.Port), Handler: r, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, WriteTimeout: 30 * time.Second, IdleTimeout: 60 * time.Second}, log: l}, nil
+	smtpCfg := notifications.SMTPConfig{Host: os.Getenv("SMTP_HOST"), Port: os.Getenv("SMTP_PORT"), Username: os.Getenv("SMTP_USERNAME"), Password: os.Getenv("SMTP_PASSWORD"), From: os.Getenv("SMTP_FROM")}
+	return &App{db: db, server: &http.Server{Addr: fmt.Sprintf("%s:%d", cfg.Host, cfg.Port), Handler: r, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, WriteTimeout: 30 * time.Second, IdleTimeout: 60 * time.Second}, log: l, notificationWorker: notifications.NewWorker(db, smtpCfg, l), tenantProvisioner: platformadmin.NewProvisioner(db, l)}, nil
 }
 func (a *App) Run() error {
+	workerCtx, stopWorkers := context.WithCancel(context.Background())
+	defer stopWorkers()
+	go a.notificationWorker.Run(workerCtx)
+	go a.tenantProvisioner.Run(workerCtx)
 	ch := make(chan error, 1)
 	go func() { a.log.Info("server starting", "addr", a.server.Addr); ch <- a.server.ListenAndServe() }()
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
 	select {
 	case e := <-ch:
+		stopWorkers()
 		if e == http.ErrServerClosed {
 			return nil
 		}
 		return e
 	case <-sig:
+		stopWorkers()
 		ctx, c := context.WithTimeout(context.Background(), 10*time.Second)
 		defer c()
 		e := a.server.Shutdown(ctx)

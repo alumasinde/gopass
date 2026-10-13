@@ -23,6 +23,7 @@ import (
 	"github.com/alumasinde/gopass/internal/modules/credentials"
 	"github.com/alumasinde/gopass/internal/modules/gatepasses"
 	"github.com/alumasinde/gopass/internal/modules/gates"
+	"github.com/alumasinde/gopass/internal/modules/notifications"
 	"github.com/alumasinde/gopass/internal/modules/organizations"
 	"github.com/alumasinde/gopass/internal/modules/passtypes"
 	"github.com/alumasinde/gopass/internal/modules/roles"
@@ -31,6 +32,7 @@ import (
 	"github.com/alumasinde/gopass/internal/modules/visitors"
 	"github.com/alumasinde/gopass/internal/platform/audit"
 	"github.com/alumasinde/gopass/internal/platform/auth"
+	"github.com/alumasinde/gopass/internal/platform/platformadmin"
 	"github.com/alumasinde/gopass/internal/platform/rbac"
 	"github.com/alumasinde/gopass/internal/routes"
 	"github.com/go-chi/chi/v5"
@@ -92,13 +94,13 @@ func newHarness(t *testing.T) *harness {
 		t.Fatalf("connect to test MySQL: %v", err)
 	}
 	var applied int
-	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM schema_migrations WHERE version >= 8`).Scan(&applied); err != nil {
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM schema_migrations WHERE version >= 9`).Scan(&applied); err != nil {
 		db.Close()
-		t.Fatalf("cannot read schema_migrations; apply migrations 0001-0008 to the dedicated test database first: %v", err)
+		t.Fatalf("cannot read schema_migrations; apply migrations 0001-0009 to the dedicated test database first: %v", err)
 	}
 	if applied == 0 {
 		db.Close()
-		t.Fatalf("migration 0008_workflow_integrity.sql is not recorded; run go run ./cmd/migrate up against the dedicated test database first")
+		t.Fatalf("migration 0009_notifications_platform_tenants.sql is not recorded; run go run ./cmd/migrate up against the dedicated test database first")
 	}
 
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
@@ -123,6 +125,8 @@ func newHarness(t *testing.T) *harness {
 		Checkins:      checkins.NewHandler(db, authz, auditService),
 		Checkouts:     checkouts.NewHandler(db, authz, auditService),
 		PassTypes:     passtypes.NewHandler(db, authz, auditService),
+		Notifications: notifications.NewHandler(db, authz),
+		Platform:      platformadmin.New(db, tokens),
 	})
 	h := &harness{t: t, db: db, router: r, tokens: tokens}
 	t.Cleanup(func() { _ = db.Close() })
@@ -697,6 +701,13 @@ func TestGatepassLifecyclePersistsTransactionalAudit(t *testing.T) {
 	}
 	assertAuditEvent(t, h.db, org.id, user.id, "gatepass.submitted")
 	assertAuditPayload(t, h.db, org.id, user.id, "gatepass.submitted", true, true)
+	var queued int
+	if err := h.db.QueryRow(`SELECT COUNT(*) FROM notifications WHERE organization_id=? AND idempotency_key=? AND event_type='gatepass.submitted' AND status='PENDING'`, org.id, fmt.Sprintf("gatepass.submitted:%d", gpID)).Scan(&queued); err != nil {
+		t.Fatal(err)
+	}
+	if queued != 1 {
+		t.Fatalf("expected one transactional gatepass-submitted notification, got %d", queued)
+	}
 
 	cancelled := h.request(http.MethodPost, fmt.Sprintf("/api/v1/gatepasses/%d/cancel", gpID), tokens.AccessToken, nil)
 	if cancelled.Code != http.StatusOK {
@@ -710,4 +721,103 @@ func TestGatepassLifecyclePersistsTransactionalAudit(t *testing.T) {
 	}
 	assertAuditEvent(t, h.db, org.id, user.id, "gatepass.cancelled")
 	assertAuditPayload(t, h.db, org.id, user.id, "gatepass.cancelled", true, true)
+}
+
+func TestPlatformAdminProvisioningAndSuspensionLifecycle(t *testing.T) {
+	h := newHarness(t)
+	suffix := fmt.Sprintf("%d", time.Now().UnixNano())
+	platformEmail := "platform-" + suffix + "@example.test"
+	platformPassword := "Platform-Integration-Password-42!"
+	hash, err := auth.Hash(platformPassword)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := h.db.Exec(`INSERT INTO platform_users(email,password_hash,display_name,is_active,created_at,updated_at) VALUES(?,?,?,1,UTC_TIMESTAMP(),UTC_TIMESTAMP())`, platformEmail, hash, "Integration Platform Admin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	platformID, err := res.LastInsertId()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _, _ = h.db.Exec(`DELETE FROM platform_users WHERE id=?`, platformID) })
+	login := h.request(http.MethodPost, "/api/v1/platform/auth/login", "", map[string]any{"email": platformEmail, "password": platformPassword})
+	if login.Code != http.StatusOK {
+		t.Fatalf("platform login: status=%d body=%s", login.Code, login.Body.String())
+	}
+	var loginEnvelope struct {
+		Data struct {
+			AccessToken string `json:"access_token"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(login.Body.Bytes(), &loginEnvelope); err != nil {
+		t.Fatal(err)
+	}
+	platformToken := loginEnvelope.Data.AccessToken
+	if platformToken == "" {
+		t.Fatal("platform login returned empty token")
+	}
+	if got := h.request(http.MethodGet, "/api/v1/organization", platformToken, nil); got.Code != http.StatusUnauthorized {
+		t.Fatalf("platform token should not access tenant routes: status=%d body=%s", got.Code, got.Body.String())
+	}
+	ownerEmail := "owner-" + suffix + "@example.test"
+	ownerPassword := integrationPassword
+	slug := "tenant-" + suffix
+	created := h.request(http.MethodPost, "/api/v1/platform/organizations", platformToken, map[string]any{"name": "Integration Tenant " + suffix, "slug": slug, "database_mode": "SHARED", "admin_first_name": "Tenant", "admin_last_name": "Owner", "admin_email": ownerEmail, "admin_password": ownerPassword})
+	if created.Code != http.StatusCreated {
+		t.Fatalf("create tenant: status=%d body=%s", created.Code, created.Body.String())
+	}
+	var createEnvelope struct {
+		Data struct {
+			ID int64 `json:"id"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(created.Body.Bytes(), &createEnvelope); err != nil {
+		t.Fatal(err)
+	}
+	orgID := createEnvelope.Data.ID
+	if orgID < 1 {
+		t.Fatal("tenant creation returned invalid ID")
+	}
+	t.Cleanup(func() { h.cleanupOrg(orgID) })
+	if err := platformadmin.NewProvisioner(h.db, nil).ProcessBatch(context.Background()); err != nil {
+		t.Fatalf("run shared tenant provisioner: %v", err)
+	}
+	var active bool
+	var lifecycle, provision string
+	if err := h.db.QueryRow(`SELECT is_active,lifecycle_status,provisioning_status FROM organizations WHERE id=?`, orgID).Scan(&active, &lifecycle, &provision); err != nil {
+		t.Fatal(err)
+	}
+	if !active || lifecycle != "ACTIVE" || provision != "READY" {
+		t.Fatalf("tenant not ready: active=%v lifecycle=%s provisioning=%s", active, lifecycle, provision)
+	}
+	var provisionAudit int
+	if err := h.db.QueryRow(`SELECT COUNT(*) FROM platform_audit_logs WHERE action='organization.provisioned' AND resource_id=?`, orgID).Scan(&provisionAudit); err != nil {
+		t.Fatal(err)
+	}
+	if provisionAudit != 1 {
+		t.Fatalf("expected transactional provisioned audit event, got %d", provisionAudit)
+	}
+	var ownerID int64
+	if err := h.db.QueryRow(`SELECT id FROM users WHERE organization_id=? AND email=?`, orgID, ownerEmail).Scan(&ownerID); err != nil {
+		t.Fatal(err)
+	}
+	tenantTokens := h.login(seededUser{id: ownerID, email: ownerEmail}, orgID)
+	suspended := h.request(http.MethodPatch, fmt.Sprintf("/api/v1/platform/organizations/%d/suspend", orgID), platformToken, nil)
+	if suspended.Code != http.StatusOK {
+		t.Fatalf("suspend tenant: status=%d body=%s", suspended.Code, suspended.Body.String())
+	}
+	if got := h.request(http.MethodGet, "/api/v1/auth/me", tenantTokens.AccessToken, nil); got.Code != http.StatusUnauthorized {
+		t.Fatalf("suspended tenant access should be denied: status=%d body=%s", got.Code, got.Body.String())
+	}
+	resumed := h.request(http.MethodPatch, fmt.Sprintf("/api/v1/platform/organizations/%d/resume", orgID), platformToken, nil)
+	if resumed.Code != http.StatusOK {
+		t.Fatalf("resume tenant: status=%d body=%s", resumed.Code, resumed.Body.String())
+	}
+	if got := h.request(http.MethodGet, "/api/v1/auth/me", tenantTokens.AccessToken, nil); got.Code != http.StatusUnauthorized {
+		t.Fatalf("suspension should revoke old sessions permanently: status=%d body=%s", got.Code, got.Body.String())
+	}
+	if fresh := h.login(seededUser{id: ownerID, email: ownerEmail}, orgID); fresh.AccessToken == "" {
+		t.Fatal("tenant could not login after resume")
+	}
 }

@@ -54,3 +54,7 @@ module/
 ```
 
 `internal/routes/api.go` is the API v1 composition point. `cmd/api/main.go` only loads configuration, constructs the application, and runs it. There are no `module.go` files.
+
+## Platform administration and notifications
+
+See [`PLATFORM_AND_NOTIFICATIONS.md`](PLATFORM_AND_NOTIFICATIONS.md) for migration `0009`, platform-admin bootstrap, tenant lifecycle/provisioning endpoints, encrypted dedicated-DB configuration limitations, notification delivery/retries, and verification commands.
