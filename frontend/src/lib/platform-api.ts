@@ -50,7 +50,7 @@ export interface CreateAdminInput {
 // Auth endpoints
 export const platformAuth = {
   login: async (email: string, password: string): Promise<LoginResponse> => {
-    const response = await api.post<LoginResponse>('/platform/auth/login', {
+    const response = await api.post<LoginResponse>('/api/v1/platform/auth/login', {
       email,
       password,
     });
@@ -58,61 +58,61 @@ export const platformAuth = {
   },
 
   logout: async (): Promise<void> => {
-    await api.post('/platform/auth/logout');
+    await api.post('/api/v1/platform/auth/logout');
   },
 };
 
 // Admin management endpoints
 export const platformAdmins = {
   list: async (): Promise<PlatformAdmin[]> => {
-    const response = await api.get<PlatformAdmin[]>('/platform/admins');
+    const response = await api.get<PlatformAdmin[]>('/api/v1/platform/admins');
     return response.data;
   },
 
   create: async (data: CreateAdminInput): Promise<PlatformAdmin> => {
-    const response = await api.post<PlatformAdmin>('/platform/admins', data);
+    const response = await api.post<PlatformAdmin>('/api/v1/platform/admins', data);
     return response.data;
   },
 
   suspend: async (id: number): Promise<void> => {
-    await api.patch(`/platform/admins/${id}/suspend`);
+    await api.patch(`/api/v1/platform/admins/${id}/suspend`);
   },
 };
 
 // Organization management endpoints
 export const platformOrganizations = {
   list: async (): Promise<Organization[]> => {
-    const response = await api.get<Organization[]>('/platform/organizations');
+    const response = await api.get<Organization[]>('/api/v1/platform/organizations');
     return response.data;
   },
 
   get: async (id: number): Promise<Organization> => {
-    const response = await api.get<Organization>(`/platform/organizations/${id}`);
+    const response = await api.get<Organization>(`/api/v1/platform/organizations/${id}`);
     return response.data;
   },
 
   create: async (data: CreateOrganizationInput): Promise<Organization> => {
-    const response = await api.post<Organization>('/platform/organizations', data);
+    const response = await api.post<Organization>('/api/v1/platform/organizations', data);
     return response.data;
   },
 
   suspend: async (id: number): Promise<void> => {
-    await api.patch(`/platform/organizations/${id}/suspend`);
+    await api.patch(`/api/v1/platform/organizations/${id}/suspend`);
   },
 
   resume: async (id: number): Promise<void> => {
-    await api.patch(`/platform/organizations/${id}/resume`);
+    await api.patch(`/api/v1/platform/organizations/${id}/resume`);
   },
 
   deprovision: async (id: number): Promise<void> => {
-    await api.post(`/platform/organizations/${id}/deprovision`);
+    await api.post(`/api/v1/platform/organizations/${id}/deprovision`);
   },
 
   retryProvisioning: async (id: number): Promise<void> => {
-    await api.post(`/platform/organizations/${id}/provision/retry`);
+    await api.post(`/api/v1/platform/organizations/${id}/provision/retry`);
   },
 
   setDatabaseConfig: async (id: number, dsn: string): Promise<void> => {
-    await api.post(`/platform/organizations/${id}/database-config`, { dsn });
+    await api.post(`/api/v1/platform/organizations/${id}/database-config`, { dsn });
   },
 };

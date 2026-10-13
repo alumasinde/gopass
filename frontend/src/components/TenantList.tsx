@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import type { Organization } from '../lib/platform-api';
 import { platformOrganizations } from '../lib/platform-api';
+import { formatLocalDate } from '../lib/dateUtils';
 
 interface TenantListProps {
   tenants: Organization[];
@@ -144,7 +145,7 @@ export default function TenantList({ tenants, onAction }: TenantListProps) {
               </td>
               <td style={{ padding: '0.75rem 1rem', fontSize: '0.875rem', color: '#6b7280' }}>{tenant.database_mode}</td>
               <td style={{ padding: '0.75rem 1rem', fontSize: '0.875rem', color: '#6b7280' }}>
-                {new Date(tenant.created_at).toLocaleDateString()}
+                {formatLocalDate(tenant.created_at)}
               </td>
               <td style={{ padding: '0.75rem 1rem', textAlign: 'right' }}>
                 <div style={{ display: 'flex', gap: '0.5rem', justifyContent: 'flex-end' }}>

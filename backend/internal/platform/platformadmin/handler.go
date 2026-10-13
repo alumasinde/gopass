@@ -133,7 +133,9 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer tx.Rollback()
-	if _, err = tx.ExecContext(r.Context(), `INSERT INTO platform_sessions(session_id,platform_user_id,expires_at,created_at,updated_at) VALUES(?,?,?,UTC_TIMESTAMP(),UTC_TIMESTAMP())`, sid, id, expires); err != nil {
+	// Calculate expiration in MySQL to ensure UTC consistency with UTC_TIMESTAMP()
+	expiresSeconds := int64(h.tokens.AccessTTL.Seconds())
+	if _, err = tx.ExecContext(r.Context(), `INSERT INTO platform_sessions(session_id,platform_user_id,expires_at,created_at,updated_at) VALUES(?,?,DATE_ADD(UTC_TIMESTAMP(), INTERVAL ? SECOND),UTC_TIMESTAMP(),UTC_TIMESTAMP())`, sid, id, expiresSeconds); err != nil {
 		httpx.Fail(w, apperr.Database)
 		return
 	}
