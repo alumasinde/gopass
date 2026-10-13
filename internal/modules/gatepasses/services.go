@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/alumasinde/gopass/internal/platform/auth"
 	"github.com/alumasinde/gopass/internal/platform/rbac"
 )
 
@@ -28,36 +29,33 @@ type Service struct {
 }
 
 func NewService(db *sql.DB, a *rbac.Service) *Service { return &Service{db, a} }
+
 func (s *Service) List(c context.Context, o int64) ([]Gatepass, error) {
-	// Get user's accessible gates based on their roles
-	gateIDs, err := s.getUserAccessibleGates(c, o)
+	all, gateIDs, err := s.accessibleGates(c, o)
 	if err != nil {
 		return nil, err
 	}
-
-	var query string
-	var args []any
-	if len(gateIDs) > 0 {
-		// Filter by accessible gates
-		placeholders := make([]string, len(gateIDs))
-		for i := range gateIDs {
-			placeholders[i] = "?"
-			args = append(args, gateIDs[i])
-		}
-		args = append(args, o)
-		query = `SELECT id,organization_id,visitor_id,gate_id,pass_type_id,status,valid_from,valid_until FROM gatepasses WHERE organization_id=? AND gate_id IN (` + strings.Join(placeholders, ",") + `) ORDER BY id DESC LIMIT 200`
-	} else {
-		// No gate-specific roles, show all in org (org-scoped users)
-		query = `SELECT id,organization_id,visitor_id,gate_id,pass_type_id,status,valid_from,valid_until FROM gatepasses WHERE organization_id=? ORDER BY id DESC LIMIT 200`
-		args = []any{o}
+	if !all && len(gateIDs) == 0 {
+		return []Gatepass{}, nil
 	}
+
+	query := `SELECT id,organization_id,visitor_id,gate_id,pass_type_id,status,valid_from,valid_until FROM gatepasses WHERE organization_id=?`
+	args := []any{o}
+	if !all {
+		ph := strings.TrimSuffix(strings.Repeat("?,", len(gateIDs)), ",")
+		query += ` AND gate_id IN (` + ph + `)`
+		for _, g := range gateIDs {
+			args = append(args, g)
+		}
+	}
+	query += ` ORDER BY id DESC LIMIT 200`
 
 	rows, e := s.db.QueryContext(c, query, args...)
 	if e != nil {
 		return nil, e
 	}
 	defer rows.Close()
-	var x []Gatepass
+	x := []Gatepass{}
 	for rows.Next() {
 		var v Gatepass
 		var vf, vu time.Time
@@ -71,6 +69,61 @@ func (s *Service) List(c context.Context, o int64) ([]Gatepass, error) {
 	return x, rows.Err()
 }
 
+func (s *Service) accessibleGates(c context.Context, orgID int64) (all bool, ids []int64, err error) {
+	cl, ok := auth.From(c)
+	if !ok {
+		return false, nil, nil
+	}
+	rows, err := s.db.QueryContext(c, `SELECT ur.scope_type,ur.site_id,ur.gate_id FROM user_roles ur JOIN role_permissions rp ON rp.role_id=ur.role_id JOIN permissions p ON p.id=rp.permission_id WHERE ur.user_id=? AND ur.organization_id=? AND ur.is_active=1 AND p.code='gatepasses.view'`, cl.UserID, orgID)
+	if err != nil {
+		return false, nil, err
+	}
+	defer rows.Close()
+	seen := map[int64]bool{}
+	var siteIDs []int64
+	for rows.Next() {
+		var scope string
+		var site, gate sql.NullInt64
+		if err := rows.Scan(&scope, &site, &gate); err != nil {
+			return false, nil, err
+		}
+		switch scope {
+		case rbac.ScopeOrganization:
+			return true, nil, nil
+		case rbac.ScopeGate:
+			if gate.Valid && !seen[gate.Int64] {
+				seen[gate.Int64] = true
+				ids = append(ids, gate.Int64)
+			}
+		case rbac.ScopeSite:
+			if site.Valid {
+				siteIDs = append(siteIDs, site.Int64)
+			}
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return false, nil, err
+	}
+	for _, sid := range siteIDs {
+		gr, err := s.db.QueryContext(c, `SELECT id FROM gates WHERE organization_id=? AND site_id=?`, orgID, sid)
+		if err != nil {
+			return false, nil, err
+		}
+		for gr.Next() {
+			var g int64
+			if err := gr.Scan(&g); err != nil {
+				gr.Close()
+				return false, nil, err
+			}
+			if !seen[g] {
+				seen[g] = true
+				ids = append(ids, g)
+			}
+		}
+		gr.Close()
+	}
+	return false, ids, nil
+}
 func (s *Service) getUserAccessibleGates(c context.Context, orgID int64) ([]int64, error) {
 	// This would need to extract user ID from context and query their gate-scoped roles
 	// For now, return empty to allow org-wide access (can be enhanced later)
@@ -120,85 +173,92 @@ func (s *Service) Create(c context.Context, o, visitor, gate, passType int64, vf
 }
 func (s *Service) Submit(c context.Context, o, id int64) (string, error) {
 	var gateID int64
-	if err := s.db.QueryRowContext(c, `SELECT gate_id FROM gatepasses WHERE organization_id=? AND id=?`, o, id).Scan(&gateID); errors.Is(err, sql.ErrNoRows) {
-		return ErrNotFound
-	} else if err != nil {
-		return err
-	}
-	if err := s.RequireGateScope(c, "gatepasses.submit", gateID); err != nil {
-		return err
-	}
-	tx, e := s.db.BeginTx(c, nil)
-	if e != nil {
-		return e
-	}
-	defer tx.Rollback()
-	var status string
-	var passType int64
-	var gate int64
-	var visitor int64
-	var requires bool
-	var vf, vu time.Time
-	e = tx.QueryRowContext(c, `SELECT gp.status,gp.pass_type_id,gp.gate_id,gp.visitor_id,pt.requires_approval,gp.valid_from,gp.valid_until FROM gatepasses gp JOIN pass_types pt ON pt.id=gp.pass_type_id WHERE gp.organization_id=? AND gp.id=? FOR UPDATE`, o, id).Scan(&status, &passType, &gate, &visitor, &requires, &vf, &vu)
-	if errors.Is(e, sql.ErrNoRows) {
-		return ErrNotFound
-	}
-	if e != nil {
-		return e
-	}
-	if status != StatusDraft {
-		return ErrTransition
-	}
-	if !vu.After(time.Now().UTC()) {
-		return ErrInvalid
-	}
-	var blacklisted bool
-	if e = tx.QueryRowContext(c, `SELECT is_blacklisted FROM visitors WHERE organization_id=? AND id=?`, o, visitor).Scan(&blacklisted); e != nil {
-		return e
-	}
-	if blacklisted {
-		return ErrBlacklisted
-	}
-	if !requires {
-		if _, e = tx.ExecContext(c, `UPDATE gatepasses SET status=?,updated_at=UTC_TIMESTAMP() WHERE organization_id=? AND id=?`, StatusApproved, o, id); e != nil {
-			return "", e
-		}
-		if err = tx.Commit(); err != nil {
-			return "", err
-		}
-		return StatusApproved, nil
-	}
-	var wfID, stepID int64
-	var stepOrder int
-	var permission, scope string
-	err := tx.QueryRowContext(c, `SELECT aw.id,aws.id,aws.step_order,aws.permission_code,aws.scope_type FROM approval_workflows aw JOIN approval_workflow_steps aws ON aws.workflow_id=aw.id AND aws.is_active=1 WHERE aw.organization_id=? AND (aw.pass_type_id=? OR aw.pass_type_id IS NULL) AND aw.is_active=1 ORDER BY CASE WHEN aw.pass_type_id=? THEN 0 ELSE 1 END,aws.step_order,aw.id LIMIT 1`, o, passType, passType).Scan(&wfID, &stepID, &stepOrder, &permission, &scope)
+	err := s.db.QueryRowContext(c, `SELECT gate_id FROM gatepasses WHERE organization_id=? AND id=?`, o, id).Scan(&gateID)
 	if errors.Is(err, sql.ErrNoRows) {
-		return ErrApprovalRequired
+		return "", ErrNotFound
 	}
 	if err != nil {
-		return err
+		return "", err
 	}
-	if _, e = tx.ExecContext(c, `UPDATE gatepasses SET status=?,updated_at=UTC_TIMESTAMP() WHERE organization_id=? AND id=?`, StatusPendingApproval, o, id); e != nil {
-		return e
+	if err := s.RequireGateScope(c, "gatepasses.submit", gateID); err != nil {
+		return "", err
 	}
-	_, e = tx.ExecContext(c, `INSERT INTO approval_requests(organization_id,gatepass_id,status,step_order,workflow_id,step_id,created_at,updated_at) VALUES(?,?,?,?,?,?,UTC_TIMESTAMP(),UTC_TIMESTAMP())`, o, id, "PENDING", stepOrder, wfID, stepID)
-	if e != nil {
-		return e
+
+	tx, err := s.db.BeginTx(c, nil)
+	if err != nil {
+		return "", err
 	}
-	_ = gate
-	_ = permission
-	_ = scope
+	defer tx.Rollback()
+
+	var (
+		status          string
+		passType, visit int64
+		requires        bool
+		validUntil      time.Time
+	)
+	err = tx.QueryRowContext(c, `SELECT gp.status,gp.pass_type_id,gp.visitor_id,pt.requires_approval,gp.valid_until FROM gatepasses gp JOIN pass_types pt ON pt.id=gp.pass_type_id AND pt.organization_id=gp.organization_id WHERE gp.organization_id=? AND gp.id=? FOR UPDATE`, o, id).
+		Scan(&status, &passType, &visit, &requires, &validUntil)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", ErrNotFound
+	}
+	if err != nil {
+		return "", err
+	}
+	if status != StatusDraft {
+		return "", ErrTransition
+	}
+	if !validUntil.After(time.Now().UTC()) {
+		return "", ErrInvalid
+	}
+
+	var blacklisted bool
+	if err = tx.QueryRowContext(c, `SELECT is_blacklisted FROM visitors WHERE organization_id=? AND id=?`, o, visit).Scan(&blacklisted); err != nil {
+		return "", err
+	}
+	if blacklisted {
+		return "", ErrBlacklisted
+	}
+
+	next := StatusApproved
+	if requires {
+		var wfID, stepID int64
+		var stepOrder int
+		err = tx.QueryRowContext(c, `SELECT aw.id,aws.id,aws.step_order FROM approval_workflows aw JOIN approval_workflow_steps aws ON aws.workflow_id=aw.id AND aws.is_active=1 WHERE aw.organization_id=? AND (aw.pass_type_id=? OR aw.pass_type_id IS NULL) AND aw.is_active=1 ORDER BY CASE WHEN aw.pass_type_id=? THEN 0 ELSE 1 END,aws.step_order,aw.id LIMIT 1`, o, passType, passType).
+			Scan(&wfID, &stepID, &stepOrder)
+		if errors.Is(err, sql.ErrNoRows) {
+			return "", ErrApprovalRequired
+		}
+		if err != nil {
+			return "", err
+		}
+		if _, err = tx.ExecContext(c, `INSERT INTO approval_requests(organization_id,gatepass_id,status,step_order,workflow_id,step_id,created_at,updated_at) VALUES(?,?,'PENDING',?,?,?,UTC_TIMESTAMP(),UTC_TIMESTAMP())`, o, id, stepOrder, wfID, stepID); err != nil {
+			return "", err
+		}
+		next = StatusPendingApproval
+	}
+
+	res, err := tx.ExecContext(c, `UPDATE gatepasses SET status=?,updated_at=UTC_TIMESTAMP() WHERE organization_id=? AND id=? AND status=?`, next, o, id, StatusDraft)
+	if err != nil {
+		return "", err
+	}
+	if n, err := res.RowsAffected(); err != nil {
+		return "", err
+	} else if n != 1 {
+		return "", ErrTransition
+	}
 	if err = tx.Commit(); err != nil {
 		return "", err
 	}
-	return StatusPendingApproval, nil
+	return next, nil
 }
 func validTransition(from, to string) bool {
 	switch from {
 	case StatusDraft:
 		return to == StatusCancelled
-	case StatusPendingApproval:
-		return to == StatusCancelled || to == StatusApproved || to == StatusRejected
+
+	case StatusPendingApproval: 
+		return to == StatusCancelled
+
 	case StatusApproved:
 		return to == StatusIssued || to == StatusCancelled || to == StatusRevoked
 	case StatusIssued:

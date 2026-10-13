@@ -6,6 +6,8 @@ import (
 	"github.com/alumasinde/gopass/internal/app/config"
 	"github.com/alumasinde/gopass/internal/app/database"
 	"github.com/alumasinde/gopass/internal/platform/auth"
+
+	"github.com/joho/godotenv"
 	"log"
 	"os"
 	"strings"
@@ -13,8 +15,10 @@ import (
 )
 
 func main() {
-	cfg := config.Load()
-	db, e := database.Open(context.Background(), cfg.DBDSN)
+	_ = godotenv.Load()
+dsn := config.DSN()
+db, e := database.Open(context.Background(), dsn)
+
 	if e != nil {
 		log.Fatal(e)
 	}

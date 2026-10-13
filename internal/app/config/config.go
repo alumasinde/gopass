@@ -22,67 +22,74 @@ type Config struct {
 
 func Load() (Config, error) {
 	_ = godotenv.Load()
-	p, _ := strconv.Atoi(env("HTTP_PORT", "8080"))
-	a, _ := time.ParseDuration(env("JWT_ACCESS_TTL", "15m"))
-	r, _ := time.ParseDuration(env("JWT_REFRESH_TTL", "168h"))
-	jwtSecret := env("JWT_SECRET", "")
-	corsOrigins := csv(env("CORS_ALLOWED_ORIGINS", ""))
+
+	port, err := strconv.Atoi(env("HTTP_PORT", "8080"))
+	if err != nil || port < 1 || port > 65535 {
+		return Config{}, fmt.Errorf("HTTP_PORT must be a number between 1 and 65535")
+	}
+	access, err := time.ParseDuration(env("JWT_ACCESS_TTL", "15m"))
+	if err != nil || access <= 0 {
+		return Config{}, fmt.Errorf("JWT_ACCESS_TTL must be a positive duration such as 15m")
+	}
+	refresh, err := time.ParseDuration(env("JWT_REFRESH_TTL", "168h"))
+	if err != nil || refresh <= 0 {
+		return Config{}, fmt.Errorf("JWT_REFRESH_TTL must be a positive duration such as 168h")
+	}
 
 	cfg := Config{
 		AppName:    env("APP_NAME", "gopass"),
-		AppEnv:     env("APP_ENV", "development"),
+		AppEnv:     strings.ToLower(env("APP_ENV", "development")),
 		AppURL:     env("APP_URL", "http://localhost:8080"),
 		Host:       env("HTTP_HOST", "0.0.0.0"),
-		Port:       p,
+		Port:       port,
 		DBDSN:      DSN(),
-		JWTSecret:  jwtSecret,
+		JWTSecret:  env("JWT_SECRET", ""),
 		JWTIssuer:  env("JWT_ISSUER", "gopass"),
-		AccessTTL:  a,
-		RefreshTTL: r,
-		CORS:       corsOrigins,
+		AccessTTL:  access,
+		RefreshTTL: refresh,
+		CORS:       csv(env("CORS_ALLOWED_ORIGINS", "")),
 		LogLevel:   env("LOG_LEVEL", "INFO"),
 	}
-
-	// Validate configuration
 	if err := Validate(cfg); err != nil {
 		return Config{}, err
 	}
-
 	return cfg, nil
 }
 
 func Validate(cfg Config) error {
-	// Reject missing JWT_SECRET in production
-	if cfg.AppEnv == "production" && cfg.JWTSecret == "" {
-		return errors.New("JWT_SECRET is required in production")
+	if cfg.DBDSN == "" {
+		return errors.New("DB_DSN (or DB_NAME and the DB_* parts) is required")
 	}
-
-	// Reject weak JWT_SECRET
 	if len(cfg.JWTSecret) < 32 {
 		return errors.New("JWT_SECRET must be at least 32 characters")
 	}
-
-	// Reject wildcard CORS origins
+	if cfg.AccessTTL >= cfg.RefreshTTL {
+		return errors.New("JWT_ACCESS_TTL must be shorter than JWT_REFRESH_TTL")
+	}
 	for _, origin := range cfg.CORS {
-		if origin == "*" || origin == "" {
-			return errors.New("wildcard CORS origins are not allowed")
+		if origin == "*" {
+			return errors.New("wildcard CORS origin is not allowed (credentials are enabled)")
 		}
-		// Validate origin format
 		if !strings.HasPrefix(origin, "http://") && !strings.HasPrefix(origin, "https://") {
-			return fmt.Errorf("invalid CORS origin: %s (must start with http:// or https://)", origin)
+			return fmt.Errorf("invalid CORS origin %q (must start with http:// or https://)", origin)
 		}
 	}
-
-	// Reject default password in production
 	if cfg.AppEnv == "production" {
-		dbPassword := os.Getenv("DB_PASSWORD")
-		if dbPassword == "ChangeMe12345!" {
-			return errors.New("default database password detected, please change DB_PASSWORD")
+		if len(cfg.CORS) == 0 {
+			return errors.New("CORS_ALLOWED_ORIGINS must be set in production")
+		}
+		for _, origin := range cfg.CORS {
+			if strings.HasPrefix(origin, "http://") {
+				return fmt.Errorf("insecure CORS origin %q is not allowed in production", origin)
+			}
+		}
+		if strings.Contains(strings.ToLower(cfg.JWTSecret), "replace-with") {
+			return errors.New("JWT_SECRET still has the example placeholder value")
 		}
 	}
-
 	return nil
 }
+
 func env(k, d string) string {
 	if v := os.Getenv(k); v != "" {
 		return v
