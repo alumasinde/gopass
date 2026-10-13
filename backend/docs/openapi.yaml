@@ -628,6 +628,102 @@ paths:
           description: Forbidden
         '404':
           description: Not found
+  /identification-types/:
+    get:
+      summary: List organization identification types
+      responses:
+        '200':
+          description: Identification type list
+        '403':
+          description: Forbidden
+    post:
+      summary: Create an identification type
+      description: Requires identification_types.manage. Type codes are unique within the organization.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [code, name]
+              properties:
+                code:
+                  type: string
+                  pattern: '^[A-Z][A-Z0-9_]{1,49}$'
+                name:
+                  type: string
+                description:
+                  type: string
+                is_active:
+                  type: boolean
+                is_default:
+                  type: boolean
+                validation_regex:
+                  type: string
+                validation_example:
+                  type: string
+      responses:
+        '201':
+          description: Identification type created
+        '409':
+          description: Duplicate code
+  /identification-types/{id}:
+    get:
+      summary: Get an identification type
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Identification type details
+        '404':
+          description: Not found
+    put:
+      summary: Update an identification type
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+                description:
+                  type: string
+                is_active:
+                  type: boolean
+                is_default:
+                  type: boolean
+                validation_regex:
+                  type: string
+                validation_example:
+                  type: string
+      responses:
+        '200':
+          description: Identification type updated
+    delete:
+      summary: Delete an unused, non-default identification type
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Identification type deleted
+        '409':
+          description: Default type or type in use
   /visitors:
     get:
       summary: List visitors
@@ -655,6 +751,18 @@ paths:
                 email:
                   type: string
                   format: email
+                company_name:
+                  type: string
+                  maxLength: 180
+                id_type_id:
+                  type: integer
+                  nullable: true
+                id_number:
+                  type: string
+                  maxLength: 100
+                id_expiry_date:
+                  type: string
+                  format: date
       responses:
         '201':
           description: Visitor created
@@ -698,6 +806,18 @@ paths:
                 email:
                   type: string
                   format: email
+                company_name:
+                  type: string
+                  maxLength: 180
+                id_type_id:
+                  type: integer
+                  nullable: true
+                id_number:
+                  type: string
+                  maxLength: 100
+                id_expiry_date:
+                  type: string
+                  format: date
       responses:
         '200':
           description: Visitor updated

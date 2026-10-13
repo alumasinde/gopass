@@ -6,6 +6,7 @@ import (
 
 	"github.com/alumasinde/gopass/internal/platform/apperr"
 	"github.com/alumasinde/gopass/internal/platform/audit"
+	"github.com/alumasinde/gopass/internal/platform/auth"
 	"github.com/alumasinde/gopass/internal/platform/httpx"
 	"github.com/alumasinde/gopass/internal/platform/rbac"
 	"github.com/alumasinde/gopass/internal/platform/tenancy"
@@ -72,24 +73,26 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 		httpx.Fail(w, apperr.Forbidden)
 		return
 	}
-	var in struct {
-		FirstName string `json:"first_name"`
-		LastName  string `json:"last_name"`
-		Phone     string `json:"phone"`
-		Email     string `json:"email"`
-	}
+	var in Input
 	if httpx.Decode(r, &in) != nil {
 		httpx.Fail(w, apperr.InvalidJSON)
 		return
 	}
-	o, _ := tenancy.ID(r.Context())
-	v, e := h.service.Create(r.Context(), o, in.FirstName, in.LastName, in.Phone, in.Email)
-	if e != nil {
-		if errors.Is(e, ErrInvalid) {
-			httpx.Fail(w, apperr.InvalidRequest)
-			return
+	org, err := tenancy.ID(r.Context())
+	if err != nil {
+		httpx.Fail(w, apperr.TenantMissing)
+		return
+	}
+	v, err := h.service.Create(r.Context(), org, in)
+	if err != nil {
+		switch {
+		case errors.Is(err, ErrInvalid):
+			httpx.Fail(w, apperr.InvalidRequest.With(err.Error()))
+		case errors.Is(err, ErrDuplicateIdentity):
+			httpx.Fail(w, apperr.Conflict.With(err.Error()))
+		default:
+			httpx.Fail(w, apperr.Database)
 		}
-		httpx.Fail(w, apperr.Database)
 		return
 	}
 	h.audit.Record(r.Context(), audit.Entry{Action: "visitor.created", ResourceType: "visitor", ResourceID: v.ID})
@@ -100,37 +103,35 @@ func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
 		httpx.Fail(w, apperr.Forbidden)
 		return
 	}
-	id, e := httpx.ID(chi.URLParam(r, "id"))
-	if e != nil {
+	id, err := httpx.ID(chi.URLParam(r, "id"))
+	if err != nil {
 		httpx.Fail(w, apperr.InvalidID)
 		return
 	}
-	var in struct {
-		FirstName string `json:"first_name"`
-		LastName  string `json:"last_name"`
-		Phone     string `json:"phone"`
-		Email     string `json:"email"`
-	}
+	var in Input
 	if httpx.Decode(r, &in) != nil {
 		httpx.Fail(w, apperr.InvalidJSON)
 		return
 	}
-	o, _ := tenancy.ID(r.Context())
-	e = h.service.Update(r.Context(), o, id, in.FirstName, in.LastName, in.Phone, in.Email)
-	if errors.Is(e, ErrNotFound) {
+	org, err := tenancy.ID(r.Context())
+	if err != nil {
+		httpx.Fail(w, apperr.TenantMissing)
+		return
+	}
+	err = h.service.Update(r.Context(), org, id, in)
+	switch {
+	case errors.Is(err, ErrNotFound):
 		httpx.Fail(w, apperr.NotFound)
-		return
-	}
-	if errors.Is(e, ErrInvalid) {
-		httpx.Fail(w, apperr.InvalidRequest)
-		return
-	}
-	if e != nil {
+	case errors.Is(err, ErrInvalid):
+		httpx.Fail(w, apperr.InvalidRequest.With(err.Error()))
+	case errors.Is(err, ErrDuplicateIdentity):
+		httpx.Fail(w, apperr.Conflict.With(err.Error()))
+	case err != nil:
 		httpx.Fail(w, apperr.Database)
-		return
+	default:
+		h.audit.Record(r.Context(), audit.Entry{Action: "visitor.updated", ResourceType: "visitor", ResourceID: id})
+		httpx.OK(w, map[string]any{"id": id})
 	}
-	h.audit.Record(r.Context(), audit.Entry{Action: "visitor.updated", ResourceType: "visitor", ResourceID: id})
-	httpx.OK(w, map[string]any{"id": id})
 }
 func (h *Handler) Blacklist(w http.ResponseWriter, r *http.Request)   { h.setBlacklist(w, r, true) }
 func (h *Handler) Unblacklist(w http.ResponseWriter, r *http.Request) { h.setBlacklist(w, r, false) }
@@ -145,7 +146,12 @@ func (h *Handler) setBlacklist(w http.ResponseWriter, r *http.Request, v bool) {
 		return
 	}
 	o, _ := tenancy.ID(r.Context())
-	e = h.service.SetBlacklist(r.Context(), o, id, v)
+	claims, ok := auth.From(r.Context())
+	if !ok || claims.UserID < 1 {
+		httpx.Fail(w, apperr.Unauthorized)
+		return
+	}
+	e = h.service.SetBlacklist(r.Context(), o, id, v, claims.UserID)
 	if errors.Is(e, ErrNotFound) {
 		httpx.Fail(w, apperr.NotFound)
 		return

@@ -1,4 +1,4 @@
--- 0010: Identification types, visitor ID fields, visits tracking, and blacklist
+-- 0013: Identification types, visitor ID fields, visits tracking, and blacklist
 -- This migration adds support for visitor identification, visit tracking, and blacklist management
 
 -- Create identification_types table
@@ -39,7 +39,7 @@ CREATE TABLE IF NOT EXISTS visits (
   visitor_id BIGINT UNSIGNED NOT NULL,
   site_id BIGINT UNSIGNED NOT NULL,
   gate_id BIGINT UNSIGNED NOT NULL,
-  direction ENUM('IN', 'OUT') NOT NULL,
+  direction VARCHAR(10) NOT NULL,
   visit_date DATE NOT NULL,
   check_in_time DATETIME NOT NULL,
   check_out_time DATETIME NULL,
@@ -73,10 +73,10 @@ CREATE TABLE IF NOT EXISTS blacklist (
   id_number VARCHAR(100) NULL,
   name VARCHAR(255) NULL,
   reason VARCHAR(500) NOT NULL,
-  severity ENUM('LOW', 'MEDIUM', 'HIGH', 'CRITICAL') NOT NULL DEFAULT 'MEDIUM',
+  severity VARCHAR(20) NOT NULL DEFAULT 'MEDIUM',
   is_active BOOLEAN NOT NULL DEFAULT TRUE,
   expires_at DATETIME NULL,
-  added_by BIGINT UNSIGNED NOT NULL,
+  added_by BIGINT UNSIGNED NULL,
   notes TEXT NULL,
   created_at DATETIME NOT NULL,
   updated_at DATETIME NOT NULL,

@@ -13,11 +13,11 @@ import (
 )
 
 type Dependencies struct {
-	Auth                                                                                                                                   *users.Handler
-	Authz                                                                                                                                  *rbac.Service
-	Audit                                                                                                                                  *audit.Service
-	Users, Organizations, Roles, Sites, Gates, Visitors, Gatepasses, Approvals, Credentials, Checkins, Checkouts, PassTypes, Notifications interface{ RegisterRoutes(chi.Router) }
-	Platform                                                                                                                               *platformadmin.Handler
+	Auth                                                                                                                                                                *users.Handler
+	Authz                                                                                                                                                               *rbac.Service
+	Audit                                                                                                                                                               *audit.Service
+	Users, Organizations, Roles, Sites, Gates, Visitors, Visits, Gatepasses, Approvals, Credentials, Checkins, Checkouts, PassTypes, Notifications, IdentificationTypes interface{ RegisterRoutes(chi.Router) }
+	Platform                                                                                                                                                            *platformadmin.Handler
 }
 
 func RegisterAPI(r chi.Router, d Dependencies) {
@@ -39,6 +39,7 @@ func RegisterAPI(r chi.Router, d Dependencies) {
 			d.Sites.RegisterRoutes(r)
 			d.Gates.RegisterRoutes(r)
 			d.Visitors.RegisterRoutes(r)
+			d.Visits.RegisterRoutes(r)
 			d.Gatepasses.RegisterRoutes(r)
 			d.Approvals.RegisterRoutes(r)
 			d.Credentials.RegisterRoutes(r)
@@ -47,6 +48,9 @@ func RegisterAPI(r chi.Router, d Dependencies) {
 			d.PassTypes.RegisterRoutes(r)
 			if d.Notifications != nil {
 				d.Notifications.RegisterRoutes(r)
+			}
+			if d.IdentificationTypes != nil {
+				d.IdentificationTypes.RegisterRoutes(r)
 			}
 		})
 	})

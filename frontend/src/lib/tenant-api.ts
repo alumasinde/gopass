@@ -33,7 +33,16 @@ export interface Visitor {
   last_name: string;
   phone?: string;
   email?: string;
+  company_name?: string;
+  id_type_id?: number | null;
+  id_type_code?: string;
+  id_type_name?: string;
+  id_number?: string;
+  id_expiry_date?: string;
   is_blacklisted?: boolean;
+  risk_score?: number;
+  risk_level?: 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL' | string;
+  risk_factors?: string[];
 }
 export interface Gatepass {
   id: number;
@@ -46,8 +55,40 @@ export interface Gatepass {
   valid_until: string;
 }
 export interface TenantGate { id: number; site_id: number; name: string; code: string; is_active: boolean }
+export interface TenantSite { id: number; name: string; code: string; is_active: boolean }
 export interface PassType { id: number; name: string; code: string; requires_approval: boolean; validity_minutes: number; is_active: boolean }
-export interface VisitorInput { first_name: string; last_name: string; phone: string; email: string }
+export interface VisitorInput {
+  first_name: string;
+  last_name: string;
+  company_name: string;
+  phone: string;
+  email: string;
+  id_type_id: number | null;
+  id_number: string;
+  id_expiry_date: string;
+}
+export interface IdentificationType {
+  id: number;
+  organization_id: number;
+  code: string;
+  name: string;
+  description: string;
+  is_active: boolean;
+  is_default: boolean;
+  validation_regex: string;
+  validation_example: string;
+  created_at?: string;
+  updated_at?: string;
+}
+export interface IdentificationTypeInput {
+  code: string;
+  name: string;
+  description: string;
+  is_active: boolean;
+  is_default: boolean;
+  validation_regex: string;
+  validation_example: string;
+}
 export interface CreateGatepassInput { visitor_id: number; gate_id: number; pass_type_id: number; valid_from: string; valid_until: string }
 export interface ApprovalRequest {
   id: number;
@@ -66,6 +107,42 @@ export interface CheckOut {
   gatepass_id: number;
   gate_id: number;
   checked_out_at: string;
+}
+export interface Visit {
+  id: number;
+  organization_id: number;
+  visitor_id: number;
+  site_id: number;
+  gate_id: number;
+  direction: 'IN' | 'OUT';
+  visit_date: string;
+  check_in_time: string;
+  check_out_time?: string;
+  purpose?: string;
+  host_name?: string;
+  host_department?: string;
+  is_blacklisted: boolean;
+  blacklist_reason?: string;
+  notes?: string;
+  created_at: string;
+  updated_at: string;
+}
+export interface VisitInput {
+  visitor_id: number;
+  site_id: number;
+  gate_id: number;
+  direction: 'IN' | 'OUT';
+  purpose?: string;
+  host_name?: string;
+  host_department?: string;
+  notes?: string;
+}
+export interface VisitUpdateInput {
+  check_out_time?: string;
+  purpose?: string;
+  host_name?: string;
+  host_department?: string;
+  notes?: string;
 }
 
 const tenantApi = axios.create({
@@ -147,6 +224,7 @@ export const tenantDashboardApi = {
   approvals: () => getArrayData<ApprovalRequest>('/api/v1/approvals/'),
   checkIns: () => getArrayData<CheckIn>('/api/v1/check-ins/'),
   checkOuts: () => getArrayData<CheckOut>('/api/v1/check-outs/'),
+  sites: () => getArrayData<TenantSite>('/api/v1/sites/'),
 };
 
 

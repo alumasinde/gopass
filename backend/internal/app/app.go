@@ -20,6 +20,7 @@ import (
 	"github.com/alumasinde/gopass/internal/modules/credentials"
 	"github.com/alumasinde/gopass/internal/modules/gatepasses"
 	"github.com/alumasinde/gopass/internal/modules/gates"
+	"github.com/alumasinde/gopass/internal/modules/identificationtypes"
 	"github.com/alumasinde/gopass/internal/modules/notifications"
 	"github.com/alumasinde/gopass/internal/modules/organizations"
 	"github.com/alumasinde/gopass/internal/modules/passtypes"
@@ -27,6 +28,7 @@ import (
 	"github.com/alumasinde/gopass/internal/modules/sites"
 	"github.com/alumasinde/gopass/internal/modules/users"
 	"github.com/alumasinde/gopass/internal/modules/visitors"
+	"github.com/alumasinde/gopass/internal/modules/visits"
 	"github.com/alumasinde/gopass/internal/platform/audit"
 	"github.com/alumasinde/gopass/internal/platform/auth"
 	"github.com/alumasinde/gopass/internal/platform/platformadmin"
@@ -66,7 +68,7 @@ func New(cfg config.Config) (*App, error) {
 	authHandler := users.NewAuthService(router, tokens, au)
 	authHandler.SetPlatformDB(platformDB)
 	usersHandler := users.NewHandler(router, az, au)
-	d := routes.Dependencies{Auth: authHandler, Authz: az, Audit: au, Users: usersHandler, Organizations: organizations.NewHandler(router, az, au), Roles: roles.NewHandler(router, az, au), Sites: sites.NewHandler(router, az, au), Gates: gates.NewHandler(router, az, au), Visitors: visitors.NewHandler(router, az, au), Gatepasses: gatepasses.NewHandler(router, az, au), Approvals: approvals.NewHandler(router, az, au), Credentials: credentials.NewHandler(router, az, au), Checkins: checkins.NewHandler(router, az, au), Checkouts: checkouts.NewHandler(router, az, au), PassTypes: passtypes.NewHandler(router, az, au), Notifications: notifications.NewHandler(router, az), Platform: platformadmin.New(platformDB, tokens, router)}
+	d := routes.Dependencies{Auth: authHandler, Authz: az, Audit: au, Users: usersHandler, Organizations: organizations.NewHandler(router, az, au), Roles: roles.NewHandler(router, az, au), Sites: sites.NewHandler(router, az, au), Gates: gates.NewHandler(router, az, au), Visitors: visitors.NewHandler(router, az, au), Visits: visits.NewHandler(router, az, au), Gatepasses: gatepasses.NewHandler(router, az, au), Approvals: approvals.NewHandler(router, az, au), Credentials: credentials.NewHandler(router, az, au), Checkins: checkins.NewHandler(router, az, au), Checkouts: checkouts.NewHandler(router, az, au), PassTypes: passtypes.NewHandler(router, az, au), IdentificationTypes: identificationtypes.NewHandler(router, az, au), Notifications: notifications.NewHandler(router, az), Platform: platformadmin.New(platformDB, tokens, router)}
 	r := chi.NewRouter()
 	//r.Use(middleware.Request, middleware.Security, middleware.CORS(cfg.CORS), middleware.Log(l), middleware.Recover(l), middleware.Bearer(tokens, authHandler.Service))
 	r.Use(middleware.Request, middleware.Security, middleware.CORS(cfg.CORS), middleware.Log(l), middleware.Recover(l))

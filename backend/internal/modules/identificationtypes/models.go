@@ -10,8 +10,8 @@ type IdentificationType struct {
 	Description       string    `json:"description"`
 	IsActive          bool      `json:"is_active"`
 	IsDefault         bool      `json:"is_default"`
-	ValidationRegex  string    `json:"validation_regex"`
-	ValidationExample string   `json:"validation_example"`
+	ValidationRegex   string    `json:"validation_regex"`
+	ValidationExample string    `json:"validation_example"`
 	CreatedAt         time.Time `json:"created_at"`
 	UpdatedAt         time.Time `json:"updated_at"`
 }

@@ -1,10 +1,12 @@
 package identificationtypes
 
 import (
+	"errors"
 	"net/http"
 
 	"github.com/alumasinde/gopass/internal/platform/apperr"
 	"github.com/alumasinde/gopass/internal/platform/audit"
+	"github.com/alumasinde/gopass/internal/platform/auth"
 	"github.com/alumasinde/gopass/internal/platform/httpx"
 	"github.com/alumasinde/gopass/internal/platform/rbac"
 	"github.com/alumasinde/gopass/internal/platform/tenancy"
@@ -86,15 +88,22 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 		Description:       in.Description,
 		IsActive:          in.IsActive,
 		IsDefault:         in.IsDefault,
-		ValidationRegex:  in.ValidationRegex,
+		ValidationRegex:   in.ValidationRegex,
 		ValidationExample: in.ValidationExample,
 	}
 	if err := h.svc.Create(r.Context(), item); err != nil {
-		httpx.Fail(w, apperr.Database)
+		switch {
+		case errors.Is(err, ErrInvalidIdentificationType):
+			httpx.Fail(w, apperr.InvalidRequest.With(err.Error()))
+		case errors.Is(err, ErrDuplicateCode):
+			httpx.Fail(w, apperr.Conflict.With(err.Error()))
+		default:
+			httpx.Fail(w, apperr.Database)
+		}
 		return
 	}
 	if h.audit != nil {
-		claims, _ := rbac.From(r.Context())
+		claims, _ := auth.From(r.Context())
 		h.audit.Record(r.Context(), audit.Entry{
 			OrganizationID: org,
 			ActorUserID:    claims.UserID,
@@ -142,11 +151,15 @@ func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
 	item.ValidationRegex = in.ValidationRegex
 	item.ValidationExample = in.ValidationExample
 	if err := h.svc.Update(r.Context(), item); err != nil {
-		httpx.Fail(w, apperr.Database)
+		if errors.Is(err, ErrInvalidIdentificationType) {
+			httpx.Fail(w, apperr.InvalidRequest.With(err.Error()))
+		} else {
+			httpx.Fail(w, apperr.Database)
+		}
 		return
 	}
 	if h.audit != nil {
-		claims, _ := rbac.From(r.Context())
+		claims, _ := auth.From(r.Context())
 		h.audit.Record(r.Context(), audit.Entry{
 			OrganizationID: org,
 			ActorUserID:    claims.UserID,
@@ -172,15 +185,17 @@ func (h *Handler) Delete(w http.ResponseWriter, r *http.Request) {
 	if err := h.svc.Delete(r.Context(), org, id); err != nil {
 		if err == ErrIdentificationTypeNotFound {
 			httpx.Fail(w, apperr.NotFound)
-		} else if err == ErrCannotDeleteDefault {
+		} else if errors.Is(err, ErrCannotDeleteDefault) {
 			httpx.Fail(w, apperr.Conflict.With("cannot delete default identification type"))
+		} else if errors.Is(err, ErrIdentificationTypeInUse) {
+			httpx.Fail(w, apperr.Conflict.With("identification type is assigned to visitor records; deactivate it instead"))
 		} else {
 			httpx.Fail(w, apperr.Database)
 		}
 		return
 	}
 	if h.audit != nil {
-		claims, _ := rbac.From(r.Context())
+		claims, _ := auth.From(r.Context())
 		h.audit.Record(r.Context(), audit.Entry{
 			OrganizationID: org,
 			ActorUserID:    claims.UserID,

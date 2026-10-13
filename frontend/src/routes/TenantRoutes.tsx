@@ -12,6 +12,7 @@ import PassTypesPage from '../modules/pass-types/PassTypesPage';
 import UsersPage from '../modules/users/UsersPage';
 import RolesPage from '../modules/roles/RolesPage';
 import OrganizationSettingsPage from '../modules/organization/OrganizationSettingsPage';
+import IdentificationTypesPage from '../modules/identification-types/IdentificationTypesPage';
 
 function TenantProtectedRoute({ children, permission }: { children: ReactNode; permission?: string }) {
   const { isAuthenticated, isLoading, user } = useTenantAuth();
@@ -35,6 +36,7 @@ export const tenantRoutes = [
   { path: '/tenant/visits', element: <TenantProtectedRoute permission="gatepasses.view"><TenantLayout><VisitsPage /></TenantLayout></TenantProtectedRoute> },
   { path: '/tenant/sites', element: <TenantProtectedRoute permission="sites.view"><TenantLayout><SitesPage /></TenantLayout></TenantProtectedRoute> },
   { path: '/tenant/gates', element: <TenantProtectedRoute permission="gates.view"><TenantLayout><GatesPage /></TenantLayout></TenantProtectedRoute> },
+  { path: '/tenant/identification-types', element: <TenantProtectedRoute permission="identification_types.view"><TenantLayout><IdentificationTypesPage /></TenantLayout></TenantProtectedRoute> },
   { path: '/tenant/pass-types', element: <TenantProtectedRoute permission="pass_types.view"><TenantLayout><PassTypesPage /></TenantLayout></TenantProtectedRoute> },
   { path: '/tenant/users', element: <TenantProtectedRoute permission="users.view"><TenantLayout><UsersPage /></TenantLayout></TenantProtectedRoute> },
   { path: '/tenant/roles', element: <TenantProtectedRoute permission="roles.view"><TenantLayout><RolesPage /></TenantLayout></TenantProtectedRoute> },

@@ -37,3 +37,12 @@ The UI uses these permissions for navigation and actions. The API remains the au
 ## API contract note
 
 This backend currently has no dedicated `/api/v1/visits` resource. The Visits UI therefore presents scheduled visitor access using existing gatepass records and endpoints; it does not call an invented visits endpoint.
+
+
+## Identity and risk
+
+- Register/edit a visitor with company, identification type, number, and expiry date.
+- Verify visitor rows show ID and dynamic risk score/factors.
+- Verify Visits selector uses the saved visitor record and shows company, ID and risk preview.
+- Confirm a visitor matched to an active blacklist entry cannot be scheduled; the backend is authoritative.
+- Identification types are managed at `/tenant/identification-types` by users with `identification_types.view` and `identification_types.manage`.

@@ -66,26 +66,7 @@ export default function TenantList({ tenants, onAction, onRowClick }: TenantList
     }
   };
 
-  const getStatusColor = (status: string) => {
-    switch (status) {
-      case 'ACTIVE': return '#10b981';
-      case 'SUSPENDED': return '#f59e0b';
-      case 'DEPROVISIONED': return '#6b7280';
-      case 'PROVISIONING': return '#3b82f6';
-      default: return '#6b7280';
-    }
-  };
 
-  const getProvisioningColor = (status: string) => {
-    switch (status) {
-      case 'READY': return '#10b981';
-      case 'PENDING': return '#3b82f6';
-      case 'BOOTSTRAPPING': return '#8b5cf6';
-      case 'FAILED': return '#ef4444';
-      case 'BLOCKED': return '#f59e0b';
-      default: return '#6b7280';
-    }
-  };
 
   if (tenants.length === 0) {
     return (

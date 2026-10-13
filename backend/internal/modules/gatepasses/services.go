@@ -112,7 +112,11 @@ func (s *Service) Create(c context.Context, o, visitor, gate, passType int64, vf
 
 	// Lock and validate all referenced records inside the same transaction.
 	var blacklisted bool
-	if err = tx.QueryRowContext(c, `SELECT is_blacklisted FROM visitors WHERE organization_id=? AND id=? FOR UPDATE`, o, visitor).Scan(&blacklisted); errors.Is(err, sql.ErrNoRows) {
+	if err = tx.QueryRowContext(c, `SELECT (v.is_blacklisted OR EXISTS (
+		SELECT 1 FROM blacklist b WHERE b.organization_id=v.organization_id AND b.is_active=1
+		AND (b.expires_at IS NULL OR b.expires_at>UTC_TIMESTAMP())
+		AND (b.visitor_id=v.id OR (NULLIF(TRIM(b.id_number),'') IS NOT NULL AND UPPER(TRIM(b.id_number))=UPPER(TRIM(COALESCE(v.id_number,''))) AND (b.id_type_id IS NULL OR b.id_type_id=v.id_type_id)))
+	)) FROM visitors v WHERE v.organization_id=? AND v.id=? AND v.archived_at IS NULL FOR UPDATE`, o, visitor).Scan(&blacklisted); errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrInvalid
 	} else if err != nil {
 		return nil, err
@@ -175,7 +179,11 @@ func (s *Service) UpdateDraft(c context.Context, o, id, visitor, gate, passType 
 		return nil, ErrTransition
 	}
 	var blacklisted bool
-	if err := s.db.QueryRowContext(c, `SELECT is_blacklisted FROM visitors WHERE organization_id=? AND id=? AND archived_at IS NULL`, o, visitor).Scan(&blacklisted); errors.Is(err, sql.ErrNoRows) {
+	if err := s.db.QueryRowContext(c, `SELECT (v.is_blacklisted OR EXISTS (
+		SELECT 1 FROM blacklist b WHERE b.organization_id=v.organization_id AND b.is_active=1
+		AND (b.expires_at IS NULL OR b.expires_at>UTC_TIMESTAMP())
+		AND (b.visitor_id=v.id OR (NULLIF(TRIM(b.id_number),'') IS NOT NULL AND UPPER(TRIM(b.id_number))=UPPER(TRIM(COALESCE(v.id_number,''))) AND (b.id_type_id IS NULL OR b.id_type_id=v.id_type_id)))
+	)) FROM visitors v WHERE v.organization_id=? AND v.id=? AND v.archived_at IS NULL`, o, visitor).Scan(&blacklisted); errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrInvalid
 	} else if err != nil {
 		return nil, err
@@ -255,7 +263,11 @@ func (s *Service) Submit(c context.Context, o, id int64) (string, error) {
 	}
 
 	var blacklisted bool
-	if err = tx.QueryRowContext(c, `SELECT is_blacklisted FROM visitors WHERE organization_id=? AND id=?`, o, visit).Scan(&blacklisted); err != nil {
+	if err = tx.QueryRowContext(c, `SELECT (v.is_blacklisted OR EXISTS (
+		SELECT 1 FROM blacklist b WHERE b.organization_id=v.organization_id AND b.is_active=1
+		AND (b.expires_at IS NULL OR b.expires_at>UTC_TIMESTAMP())
+		AND (b.visitor_id=v.id OR (NULLIF(TRIM(b.id_number),'') IS NOT NULL AND UPPER(TRIM(b.id_number))=UPPER(TRIM(COALESCE(v.id_number,''))) AND (b.id_type_id IS NULL OR b.id_type_id=v.id_type_id)))
+	)) FROM visitors v WHERE v.organization_id=? AND v.id=? AND v.archived_at IS NULL`, o, visit).Scan(&blacklisted); err != nil {
 		return "", err
 	}
 	if blacklisted {
