@@ -76,9 +76,9 @@ export const platformAdmins = {
     return response.data.data;
   },
 
-  suspend: async (id: number): Promise<void> => {
-    await api.patch(`/api/v1/platform/admins/${id}/suspend`);
-  },
+  suspend: async (id: number): Promise<void> => { await api.patch(`/api/v1/platform/admins/${id}/suspend`); },
+  resume: async (id: number): Promise<void> => { await api.patch(`/api/v1/platform/admins/${id}/resume`); },
+  update: async (id: number, data: Pick<PlatformAdmin, 'email' | 'display_name'>): Promise<PlatformAdmin> => { const response = await api.put<Envelope<PlatformAdmin>>(`/api/v1/platform/admins/${id}`, data); return response.data.data; },
 };
 
 // Organization management endpoints
@@ -90,6 +90,11 @@ export const platformOrganizations = {
 
   get: async (id: number): Promise<Organization> => {
     const response = await api.get<Envelope<Organization>>(`/api/v1/platform/organizations/${id}`);
+    return response.data.data;
+  },
+
+  update: async (id: number, data: Pick<Organization, 'name' | 'slug'>): Promise<Organization> => {
+    const response = await api.put<Envelope<Organization>>(`/api/v1/platform/organizations/${id}`, data);
     return response.data.data;
   },
 

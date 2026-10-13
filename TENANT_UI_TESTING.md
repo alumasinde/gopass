@@ -62,3 +62,21 @@ This phase implements tenant sign-in/session handling and a read-only dashboard.
 - Tenant navigation and dashboard cards are shown according to those permission codes.
 - Dashboard values are fetched from the current authenticated tenant's API; unavailable/forbidden datasets display a visible state rather than being fabricated.
 - Backend authorization remains authoritative; hiding a UI action is not a replacement for API permission checks.
+
+
+## Tenant CRUD modules added
+
+- `/tenant/sites`: site CRUD (archive is a soft-disable action).
+- `/tenant/gates`: gate CRUD with site selection.
+- `/tenant/pass-types`: pass type CRUD (archive disables the pass type).
+- `/tenant/users`: create/edit and enable/disable tenant users.
+- `/tenant/roles`: create/edit/delete custom roles and assign/remove permissions that the current user is authorized to delegate.
+- `/tenant/organization`: organization name and slug settings.
+- `/tenant/visitors`: archive visitors without deleting historical gatepass references.
+- `/tenant/visits`: edit draft access requests; submitted requests remain workflow-controlled.
+
+The shared CRUD kit lives in `frontend/src/components/crud/`. Module API calls live in each module's `api.ts`; all feature styles are imported from `frontend/src/index.css` through `frontend/src/styles/`. The legacy `frontend/src/pages/` directory has been removed.
+
+### Migration note
+
+Migration `0012_visitors_archive.sql` adds the `archived_at` column used by visitor archive and draft gatepass validation. Apply tenant migrations to the shared tenant database and every active, ready dedicated tenant database before enabling archive/edit workflows. From `backend`, run `go run ./cmd/tenant-migrate up`; it migrates the shared tenant schema and then each active, ready dedicated tenant database. New tenant provisioning uses the embedded migration set. For a legacy single-database installation, complete the documented `platform-import` cutover before applying migration 0011, which removes obsolete platform-only tables from the tenant database.

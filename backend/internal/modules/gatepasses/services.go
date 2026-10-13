@@ -161,6 +161,59 @@ func (s *Service) Create(c context.Context, o, visitor, gate, passType int64, vf
 	}
 	return s.Get(c, o, id)
 }
+func (s *Service) UpdateDraft(c context.Context, o, id, visitor, gate, passType int64, vf, vu time.Time) (*Gatepass, error) {
+	if visitor < 1 || gate < 1 || passType < 1 || vf.IsZero() || vu.IsZero() || !vu.After(vf) {
+		return nil, ErrInvalid
+	}
+	var status string
+	if err := s.db.QueryRowContext(c, `SELECT status FROM gatepasses WHERE organization_id=? AND id=?`, o, id).Scan(&status); errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrNotFound
+	} else if err != nil {
+		return nil, err
+	}
+	if status != StatusDraft {
+		return nil, ErrTransition
+	}
+	var blacklisted bool
+	if err := s.db.QueryRowContext(c, `SELECT is_blacklisted FROM visitors WHERE organization_id=? AND id=? AND archived_at IS NULL`, o, visitor).Scan(&blacklisted); errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrInvalid
+	} else if err != nil {
+		return nil, err
+	}
+	if blacklisted {
+		return nil, ErrBlacklisted
+	}
+	var active bool
+	if err := s.db.QueryRowContext(c, `SELECT is_active FROM gates WHERE organization_id=? AND id=?`, o, gate).Scan(&active); errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrInvalid
+	} else if err != nil {
+		return nil, err
+	}
+	if !active {
+		return nil, ErrInvalid
+	}
+	if err := s.db.QueryRowContext(c, `SELECT is_active FROM pass_types WHERE organization_id=? AND id=?`, o, passType).Scan(&active); errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrInvalid
+	} else if err != nil {
+		return nil, err
+	}
+	if !active {
+		return nil, ErrInvalid
+	}
+	res, err := s.db.ExecContext(c, `UPDATE gatepasses SET visitor_id=?,gate_id=?,pass_type_id=?,valid_from=?,valid_until=?,updated_at=UTC_TIMESTAMP() WHERE organization_id=? AND id=? AND status=?`, visitor, gate, passType, vf.UTC(), vu.UTC(), o, id, StatusDraft)
+	if err != nil {
+		return nil, err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return nil, err
+	}
+	if n == 0 {
+		return nil, ErrTransition
+	}
+	return s.Get(c, o, id)
+}
+
 func (s *Service) Submit(c context.Context, o, id int64) (string, error) {
 	var gateID int64
 	err := s.db.QueryRowContext(c, `SELECT gate_id FROM gatepasses WHERE organization_id=? AND id=?`, o, id).Scan(&gateID)

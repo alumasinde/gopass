@@ -8,13 +8,16 @@ The frontend is organized by product domain under `src/modules/`:
 - `visitors/`: visitor directory, visitor details, registration, edits and blacklist actions.
 - `visits/`: scheduled access/visit workflow UI.
 - `gatepass/`: gatepass domain API exports used by visit scheduling and future gatepass screens.
+- `sites/`, `gates/`, `pass-types/`: configurable tenant reference data.
+- `users/`, `roles/`, `organization/`: tenant access control and organization settings.
+- `components/crud/`: shared data table, form modal, confirmation dialog, and CRUD state hook.
 
-Routes import modules directly. `src/pages/` currently contains compatibility re-exports only; new page implementations belong under `src/modules/<domain>/`.
+Routes import modules directly. Page implementations belong under `src/modules/<domain>/`.
 
 ## Styles
 
-`src/main.tsx` imports `src/index.css` as the single application stylesheet entry point. Feature styles live in `src/styles/` and are imported by `index.css`; legacy static inline styles have also been extracted into centrally defined classes. Views should use class names and must not import CSS files or add inline styling.
+`src/main.tsx` imports `src/index.css` as the single application stylesheet entry point. Feature styles live in `src/styles/` and are imported by `index.css`; shared CRUD styles are defined in `src/styles/crud.css`. Views should use class names and must not import CSS files or add inline styling.
 
 ## Backend contract
 
-Visitor UI calls the existing `/api/v1/visitors/` list/create routes, `/api/v1/visitors/{id}` get/update routes, and blacklist/unblacklist actions. Visit scheduling currently uses the backend's gatepass resource because this source does not define a dedicated `/api/v1/visits` endpoint. The Visits UI creates draft gatepasses and uses existing submit/cancel/revoke actions. A dedicated Visit entity and API can be added later if visit scheduling needs its own lifecycle separate from gatepasses.
+Visitor UI calls the existing `/api/v1/visitors/` list/create routes, `/api/v1/visitors/{id}` get/update routes, blacklist/unblacklist actions, and the new soft-archive endpoint. Visit scheduling currently uses the backend's gatepass resource because this source does not define a dedicated `/api/v1/visits` endpoint. The Visits UI creates and edits draft gatepasses and uses existing submit/cancel/revoke actions. A dedicated Visit entity and API can be added later if visit scheduling needs its own lifecycle separate from gatepasses.

@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import type { FormEvent } from 'react';
 import { useTenantAuth } from '../../contexts/TenantAuthContext';
-import { tenantApiErrorMessage, tenantDashboardApi, tenantVisitsApi } from '../../lib/tenant-api';
+import { tenantApiErrorMessage, tenantDashboardApi } from '../../lib/tenant-api';
+import { visitsApi } from './api';
 import type { Gatepass, PassType, TenantGate, Visitor } from '../../lib/tenant-api';
 
 function localDateTime(date: Date) {
@@ -37,6 +38,7 @@ export default function VisitsPage() {
   const canViewPassTypes = permissions.has('pass_types.view');
   const canCreate = permissions.has('gatepasses.create') && permissions.has('visitors.view') && permissions.has('gates.view') && permissions.has('pass_types.view');
   const canSubmit = permissions.has('gatepasses.submit');
+  const canEdit = permissions.has('gatepasses.update');
   const canCancel = permissions.has('gatepasses.cancel');
   const canRevoke = permissions.has('gatepasses.revoke');
   const [passes, setPasses] = useState<Gatepass[]>([]);
@@ -50,6 +52,7 @@ export default function VisitsPage() {
   const [query, setQuery] = useState('');
   const [filter, setFilter] = useState('all');
   const [modalOpen, setModalOpen] = useState(false);
+  const [editingPass, setEditingPass] = useState<Gatepass | null>(null);
   const [form, setForm] = useState<VisitForm>(defaultForm());
   const [formError, setFormError] = useState('');
   const [saving, setSaving] = useState(false);
@@ -60,10 +63,10 @@ export default function VisitsPage() {
     if (quiet) setRefreshing(true); else setLoading(true);
     setError('');
     const results = await Promise.allSettled([
-      tenantVisitsApi.list(),
+      visitsApi.list(),
       canViewVisitors ? tenantDashboardApi.visitors() : Promise.resolve([]),
-      canViewGates ? tenantVisitsApi.gates() : Promise.resolve([]),
-      canViewPassTypes ? tenantVisitsApi.passTypes() : Promise.resolve([]),
+      canViewGates ? visitsApi.gates() : Promise.resolve([]),
+      canViewPassTypes ? visitsApi.passTypes() : Promise.resolve([]),
     ]);
     if (results[0].status === 'fulfilled') setPasses(results[0].value);
     else setError(tenantApiErrorMessage(results[0].reason, 'Visit records could not be loaded.'));
@@ -100,12 +103,19 @@ export default function VisitsPage() {
     if (until.getTime() <= Date.now()) { setFormError('The visit end time must be in the future.'); return; }
     setSaving(true); setNotice('');
     try {
-      const created = await tenantVisitsApi.create({ visitor_id: Number(form.visitor_id), gate_id: Number(form.gate_id), pass_type_id: Number(form.pass_type_id), valid_from: from.toISOString(), valid_until: until.toISOString() });
-      setNotice(`Visit access request #${created.id} created as a draft. Submit it when ready.`);
-      setModalOpen(false); setForm(defaultForm());
+      const payload = { visitor_id: Number(form.visitor_id), gate_id: Number(form.gate_id), pass_type_id: Number(form.pass_type_id), valid_from: from.toISOString(), valid_until: until.toISOString() };
+      const saved = editingPass ? await visitsApi.update(editingPass.id, payload) : await visitsApi.create(payload);
+      setNotice(editingPass ? `Visit access request #${saved.id} updated.` : `Visit access request #${saved.id} created as a draft. Submit it when ready.`);
+      setModalOpen(false); setEditingPass(null); setForm(defaultForm());
       await load(true);
     } catch (err) { setFormError(tenantApiErrorMessage(err, 'Visit could not be created. Check your gate and pass type permissions.')); }
     finally { setSaving(false); }
+  };
+
+  const openEdit = (pass: Gatepass) => {
+    setEditingPass(pass);
+    setForm({ visitor_id: String(pass.visitor_id), gate_id: String(pass.gate_id), pass_type_id: String(pass.pass_type_id), valid_from: localDateTime(new Date(pass.valid_from)), valid_until: localDateTime(new Date(pass.valid_until)) });
+    setFormError(''); setModalOpen(true);
   };
 
   const runAction = async (pass: Gatepass, action: 'submit' | 'cancel' | 'revoke') => {
@@ -113,7 +123,7 @@ export default function VisitsPage() {
     if (action !== 'submit' && !window.confirm(`Are you sure you want to ${labels[action]}?`)) return;
     setActionId(pass.id); setError(''); setNotice('');
     try {
-      const result = action === 'submit' ? await tenantVisitsApi.submit(pass.id) : action === 'cancel' ? await tenantVisitsApi.cancel(pass.id) : await tenantVisitsApi.revoke(pass.id);
+      const result = action === 'submit' ? await visitsApi.submit(pass.id) : action === 'cancel' ? await visitsApi.cancel(pass.id) : await visitsApi.revoke(pass.id);
       setNotice(action === 'submit' ? `Visit #${pass.id} submitted. Current status: ${titleCase(result.status)}.` : `Visit #${pass.id} ${action === 'cancel' ? 'cancelled' : 'revoked'}.`);
       await load(true);
     } catch (err) { setError(tenantApiErrorMessage(err, `Could not ${action} visit #${pass.id}.`)); }
@@ -127,7 +137,7 @@ export default function VisitsPage() {
   const active = passes.filter((pass) => ['APPROVED', 'ISSUED', 'CHECKED_IN'].includes(pass.status)).length;
 
   return <section className="module-page">
-    <header className="module-page-header"><div><div className="module-eyebrow">WORKSPACE / ACCESS SCHEDULING</div><h1>Visits</h1><p>Schedule visitor access, track approval status and manage each visit's access lifecycle.</p></div><div className="module-header-actions"><button type="button" className="module-button module-button-secondary" onClick={() => void load(true)} disabled={refreshing}>{refreshing ? 'Refreshing…' : '↻ Refresh'}</button>{canCreate && <button type="button" className="module-button module-button-primary" onClick={() => { setForm(defaultForm()); setFormError(''); setModalOpen(true); }}>＋ Schedule visit</button>}</div></header>
+    <header className="module-page-header"><div><div className="module-eyebrow">WORKSPACE / ACCESS SCHEDULING</div><h1>Visits</h1><p>Schedule visitor access, track approval status and manage each visit's access lifecycle.</p></div><div className="module-header-actions"><button type="button" className="module-button module-button-secondary" onClick={() => void load(true)} disabled={refreshing}>{refreshing ? 'Refreshing…' : '↻ Refresh'}</button>{canCreate && <button type="button" className="module-button module-button-primary" onClick={() => { setEditingPass(null); setForm(defaultForm()); setFormError(''); setModalOpen(true); }}>＋ Schedule visit</button>}</div></header>
     <div className="module-info-banner"><span>i</span><p>Visit schedules currently use the backend's <strong>gatepass</strong> records. Creating a visit creates a draft gatepass; submit it to run the configured approval workflow.</p></div>
     <div className="module-metric-row"><article className="module-metric-card"><span className="module-metric-icon module-tone-blue">◷</span><div><small>Upcoming visits</small><strong>{upcoming}</strong></div></article><article className="module-metric-card"><span className="module-metric-icon module-tone-amber">⌛</span><div><small>Awaiting action</small><strong>{pending}</strong></div></article><article className="module-metric-card"><span className="module-metric-icon module-tone-green">✓</span><div><small>Approved / active</small><strong>{active}</strong></div></article></div>
     {notice && <div className="module-alert module-alert-success" role="status"><span>✓</span>{notice}<button type="button" aria-label="Dismiss notice" onClick={() => setNotice('')}>×</button></div>}
@@ -139,13 +149,13 @@ export default function VisitsPage() {
         <td><strong>{gate?.name || `Gate #${pass.gate_id}`}</strong><small className="module-table-subtext">{passType?.name || `Pass type #${pass.pass_type_id}`}</small></td>
         <td><strong>{formatDate(pass.valid_from)}</strong><small className="module-table-subtext">Until {formatDate(pass.valid_until)}</small></td>
         <td><span className={`module-status ${statusClass(pass.status)}`}><i />{titleCase(pass.status)}</span></td>
-        <td><div className="module-row-actions">{canSubmitThis && <button type="button" className="module-button module-button-small module-button-primary" disabled={actionId === pass.id} onClick={() => void runAction(pass, 'submit')}>{actionId === pass.id ? 'Working…' : 'Submit'}</button>}{canCancelThis && <button type="button" className="module-icon-button module-icon-button-danger" title="Cancel visit" aria-label="Cancel visit" disabled={actionId === pass.id} onClick={() => void runAction(pass, 'cancel')}>×</button>}{canRevokeThis && <button type="button" className="module-icon-button module-icon-button-danger" title="Revoke access" aria-label="Revoke access" disabled={actionId === pass.id} onClick={() => void runAction(pass, 'revoke')}>⊘</button>}</div></td>
+        <td><div className="module-row-actions">{canEdit && pass.status === 'DRAFT' && <button type="button" className="module-button module-button-small module-button-secondary" disabled={actionId === pass.id} onClick={() => openEdit(pass)}>Edit</button>}{canSubmitThis && <button type="button" className="module-button module-button-small module-button-primary" disabled={actionId === pass.id} onClick={() => void runAction(pass, 'submit')}>{actionId === pass.id ? 'Working…' : 'Submit'}</button>}{canCancelThis && <button type="button" className="module-icon-button module-icon-button-danger" title="Cancel visit" aria-label="Cancel visit" disabled={actionId === pass.id} onClick={() => void runAction(pass, 'cancel')}>×</button>}{canRevokeThis && <button type="button" className="module-icon-button module-icon-button-danger" title="Revoke access" aria-label="Revoke access" disabled={actionId === pass.id} onClick={() => void runAction(pass, 'revoke')}>⊘</button>}</div></td>
       </tr>; })}</tbody></table></div>}
     </div>
 
-    {modalOpen && <div className="module-modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !saving) setModalOpen(false); }}><section className="module-modal module-modal-wide" role="dialog" aria-modal="true" aria-labelledby="visit-form-title"><header className="module-modal-header"><div><div className="module-eyebrow">VISIT SCHEDULING</div><h2 id="visit-form-title">Schedule a visit</h2><p>Create a draft access request. You can submit it after saving.</p></div><button type="button" className="module-icon-button" aria-label="Close" disabled={saving} onClick={() => setModalOpen(false)}>×</button></header>
+    {modalOpen && <div className="module-modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !saving) { setModalOpen(false); setEditingPass(null); } }}><section className="module-modal module-modal-wide" role="dialog" aria-modal="true" aria-labelledby="visit-form-title"><header className="module-modal-header"><div><div className="module-eyebrow">VISIT SCHEDULING</div><h2 id="visit-form-title">{editingPass ? 'Edit visit draft' : 'Schedule a visit'}</h2><p>{editingPass ? 'Only draft access requests can be edited.' : 'Create a draft access request. You can submit it after saving.'}</p></div><button type="button" className="module-icon-button" aria-label="Close" disabled={saving} onClick={() => { setModalOpen(false); setEditingPass(null); }}>×</button></header>
       {(!visitors.length || !gates.some((gate) => gate.is_active) || !passTypes.some((type) => type.is_active)) && <div className="module-alert module-alert-warning"><span>!</span><div>Scheduling requires an available visitor, active gate and active pass type. Check the related modules and your permissions if any option is missing.</div></div>}
-      <form onSubmit={(event) => void submitCreate(event)}><div className="module-form-grid"><label className="module-field module-field-full"><span>Visitor <b>*</b></span><select required value={form.visitor_id} onChange={(event) => setForm({ ...form, visitor_id: event.target.value })}><option value="">Select visitor</option>{visitors.filter((visitor) => !visitor.is_blacklisted).map((visitor) => <option key={visitor.id} value={visitor.id}>{visitor.first_name} {visitor.last_name}{visitor.phone ? ` · ${visitor.phone}` : ''}</option>)}</select></label><label className="module-field"><span>Gate <b>*</b></span><select required value={form.gate_id} onChange={(event) => setForm({ ...form, gate_id: event.target.value })}><option value="">Select gate</option>{gates.filter((gate) => gate.is_active).map((gate) => <option key={gate.id} value={gate.id}>{gate.name} ({gate.code})</option>)}</select></label><label className="module-field"><span>Pass type <b>*</b></span><select required value={form.pass_type_id} onChange={(event) => setForm({ ...form, pass_type_id: event.target.value })}><option value="">Select pass type</option>{passTypes.filter((type) => type.is_active).map((type) => <option key={type.id} value={type.id}>{type.name}{type.requires_approval ? ' · Approval required' : ''}</option>)}</select></label><label className="module-field"><span>Valid from <b>*</b></span><input type="datetime-local" required value={form.valid_from} onChange={(event) => setForm({ ...form, valid_from: event.target.value })} /></label><label className="module-field"><span>Valid until <b>*</b></span><input type="datetime-local" required value={form.valid_until} onChange={(event) => setForm({ ...form, valid_until: event.target.value })} /></label></div>{formError && <div className="module-alert module-alert-error" role="alert">{formError}</div>}<footer className="module-modal-footer"><button type="button" className="module-button module-button-secondary" disabled={saving} onClick={() => setModalOpen(false)}>Cancel</button><button type="submit" className="module-button module-button-primary" disabled={saving || !visitors.some((visitor) => !visitor.is_blacklisted) || !gates.some((gate) => gate.is_active) || !passTypes.some((type) => type.is_active)}>{saving ? 'Creating…' : 'Create visit draft'}</button></footer></form>
+      <form onSubmit={(event) => void submitCreate(event)}><div className="module-form-grid"><label className="module-field module-field-full"><span>Visitor <b>*</b></span><select required value={form.visitor_id} onChange={(event) => setForm({ ...form, visitor_id: event.target.value })}><option value="">Select visitor</option>{visitors.filter((visitor) => !visitor.is_blacklisted).map((visitor) => <option key={visitor.id} value={visitor.id}>{visitor.first_name} {visitor.last_name}{visitor.phone ? ` · ${visitor.phone}` : ''}</option>)}</select></label><label className="module-field"><span>Gate <b>*</b></span><select required value={form.gate_id} onChange={(event) => setForm({ ...form, gate_id: event.target.value })}><option value="">Select gate</option>{gates.filter((gate) => gate.is_active).map((gate) => <option key={gate.id} value={gate.id}>{gate.name} ({gate.code})</option>)}</select></label><label className="module-field"><span>Pass type <b>*</b></span><select required value={form.pass_type_id} onChange={(event) => setForm({ ...form, pass_type_id: event.target.value })}><option value="">Select pass type</option>{passTypes.filter((type) => type.is_active).map((type) => <option key={type.id} value={type.id}>{type.name}{type.requires_approval ? ' · Approval required' : ''}</option>)}</select></label><label className="module-field"><span>Valid from <b>*</b></span><input type="datetime-local" required value={form.valid_from} onChange={(event) => setForm({ ...form, valid_from: event.target.value })} /></label><label className="module-field"><span>Valid until <b>*</b></span><input type="datetime-local" required value={form.valid_until} onChange={(event) => setForm({ ...form, valid_until: event.target.value })} /></label></div>{formError && <div className="module-alert module-alert-error" role="alert">{formError}</div>}<footer className="module-modal-footer"><button type="button" className="module-button module-button-secondary" disabled={saving} onClick={() => { setModalOpen(false); setEditingPass(null); }}>Cancel</button><button type="submit" className="module-button module-button-primary" disabled={saving || !visitors.some((visitor) => !visitor.is_blacklisted) || !gates.some((gate) => gate.is_active) || !passTypes.some((type) => type.is_active)}>{saving ? 'Saving…' : editingPass ? 'Save draft changes' : 'Create visit draft'}</button></footer></form>
     </section></div>}
   </section>;
 }

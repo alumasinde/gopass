@@ -149,23 +149,6 @@ export const tenantDashboardApi = {
   checkOuts: () => getArrayData<CheckOut>('/api/v1/check-outs/'),
 };
 
-export const tenantVisitorsApi = {
-  list: () => getArrayData<Visitor>('/api/v1/visitors/'),
-  get: (id: number) => getData<Visitor>(`/api/v1/visitors/${id}`),
-  create: async (input: VisitorInput) => { const response = await tenantApi.post<Envelope<Visitor>>('/api/v1/visitors/', input); return response.data.data; },
-  update: async (id: number, input: VisitorInput) => { const response = await tenantApi.put<Envelope<{ id: number }>>(`/api/v1/visitors/${id}`, input); return response.data.data; },
-  blacklist: async (id: number) => { const response = await tenantApi.post<Envelope<{ id: number; is_blacklisted: boolean }>>(`/api/v1/visitors/${id}/blacklist`); return response.data.data; },
-  unblacklist: async (id: number) => { const response = await tenantApi.post<Envelope<{ id: number; is_blacklisted: boolean }>>(`/api/v1/visitors/${id}/unblacklist`); return response.data.data; },
-};
 
-export const tenantVisitsApi = {
-  list: () => getArrayData<Gatepass>('/api/v1/gatepasses/'),
-  gates: () => getArrayData<TenantGate>('/api/v1/gates/'),
-  passTypes: () => getArrayData<PassType>('/api/v1/pass-types/'),
-  create: async (input: CreateGatepassInput) => { const response = await tenantApi.post<Envelope<Gatepass>>('/api/v1/gatepasses/', input); return response.data.data; },
-  submit: async (id: number) => { const response = await tenantApi.post<Envelope<{ id: number; status: string }>>(`/api/v1/gatepasses/${id}/submit`); return response.data.data; },
-  cancel: async (id: number) => { const response = await tenantApi.post<Envelope<{ id: number; status: string }>>(`/api/v1/gatepasses/${id}/cancel`); return response.data.data; },
-  revoke: async (id: number) => { const response = await tenantApi.post<Envelope<{ id: number; status: string }>>(`/api/v1/gatepasses/${id}/revoke`); return response.data.data; },
-};
 
 export default tenantApi;

@@ -28,6 +28,9 @@ func (h *Handler) registerRoutes(r chi.Router) {
 	r.Route("/roles", func(r chi.Router) {
 		r.Get("/", h.List)
 		r.Post("/", h.Create)
+		r.Get("/permissions", h.ListPermissions)
+		r.Put("/{id}", h.Update)
+		r.Delete("/{id}", h.Delete)
 		r.Post("/{id}/permissions", h.AssignPermission)
 		r.Delete("/{id}/permissions/{permission_id}", h.RemovePermission)
 		r.Get("/{id}/permissions", h.GetPermissions)
@@ -322,6 +325,98 @@ func (h *Handler) GetUserRoles(w http.ResponseWriter, r *http.Request) {
 			"site_id": ur.SiteID, "gate_id": ur.GateID, "is_active": ur.IsActive,
 			"role_name": ur.RoleName, "role_code": ur.RoleCode,
 		}
+	}
+	httpx.OK(w, out)
+}
+
+func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
+	if h.authz.Require(r.Context(), "roles.update") != nil {
+		httpx.Fail(w, apperr.Forbidden)
+		return
+	}
+	id, err := httpx.ID(chi.URLParam(r, "id"))
+	if err != nil {
+		httpx.Fail(w, apperr.InvalidID)
+		return
+	}
+	var in struct {
+		Name string `json:"name"`
+		Code string `json:"code"`
+	}
+	if httpx.Decode(r, &in) != nil {
+		httpx.Fail(w, apperr.InvalidJSON)
+		return
+	}
+	org, _ := tenancy.ID(r.Context())
+	role, err := h.service.GetRole(r.Context(), org, id)
+	if err != nil {
+		httpx.Fail(w, apperr.NotFound)
+		return
+	}
+	role.Name = in.Name
+	role.Code = in.Code
+	if err = h.service.UpdateRole(r.Context(), org, role); err != nil {
+		if err == ErrSystemRoleImmutable {
+			httpx.Fail(w, apperr.Forbidden.With("system roles cannot be modified"))
+		} else if err == ErrRoleAlreadyExists {
+			httpx.Fail(w, apperr.Conflict)
+		} else {
+			httpx.Fail(w, apperr.InvalidRequest.With(err.Error()))
+		}
+		return
+	}
+	h.audit.Record(r.Context(), audit.Entry{Action: "role.updated", ResourceType: "role", ResourceID: id})
+	httpx.OK(w, map[string]any{"id": id})
+}
+func (h *Handler) Delete(w http.ResponseWriter, r *http.Request) {
+	if h.authz.Require(r.Context(), "roles.delete") != nil {
+		httpx.Fail(w, apperr.Forbidden)
+		return
+	}
+	id, err := httpx.ID(chi.URLParam(r, "id"))
+	if err != nil {
+		httpx.Fail(w, apperr.InvalidID)
+		return
+	}
+	org, _ := tenancy.ID(r.Context())
+	if err = h.service.DeleteRole(r.Context(), org, id); err != nil {
+		if err == ErrRoleNotFound {
+			httpx.Fail(w, apperr.NotFound)
+		} else if err == ErrSystemRoleImmutable {
+			httpx.Fail(w, apperr.Forbidden.With("system roles cannot be deleted"))
+		} else {
+			httpx.Fail(w, apperr.Conflict.With("role may be assigned to users or still be in use"))
+		}
+		return
+	}
+	h.audit.Record(r.Context(), audit.Entry{Action: "role.deleted", ResourceType: "role", ResourceID: id})
+	httpx.OK(w, map[string]any{"id": id})
+}
+func (h *Handler) ListPermissions(w http.ResponseWriter, r *http.Request) {
+	if h.authz.Require(r.Context(), "roles.manage_permissions") != nil {
+		httpx.Fail(w, apperr.Forbidden)
+		return
+	}
+	rows, err := h.db.QueryContext(r.Context(), `SELECT id,code,name,COALESCE(description,''),module,action,is_system FROM permissions ORDER BY module,action,code`)
+	if err != nil {
+		httpx.Fail(w, apperr.Database)
+		return
+	}
+	defer rows.Close()
+	out := []map[string]any{}
+	for rows.Next() {
+		var id int64
+		var code, name, description, module, action string
+		var system bool
+		if err = rows.Scan(&id, &code, &name, &description, &module, &action, &system); err != nil {
+			httpx.Fail(w, apperr.Database)
+			return
+		}
+		out = append(out, map[string]any{"id": id, "code": code, "name": name, "description": description, "module": module, "action": action, "is_system": system})
+	}
+	if rows.Err() != nil {
+		httpx.Fail(w, apperr.Database)
+		return
 	}
 	httpx.OK(w, out)
 }

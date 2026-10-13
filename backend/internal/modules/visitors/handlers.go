@@ -27,6 +27,7 @@ func (h *Handler) registerRoutes(r chi.Router) {
 		r.Post("/", h.Create)
 		r.Get("/{id}", h.Get)
 		r.Put("/{id}", h.Update)
+		r.Post("/{id}/archive", h.Archive)
 		r.Post("/{id}/blacklist", h.Blacklist)
 		r.Post("/{id}/unblacklist", h.Unblacklist)
 	})
@@ -155,4 +156,30 @@ func (h *Handler) setBlacklist(w http.ResponseWriter, r *http.Request, v bool) {
 	}
 	h.audit.Record(r.Context(), audit.Entry{Action: "visitor.blacklist_changed", ResourceType: "visitor", ResourceID: id})
 	httpx.OK(w, map[string]any{"id": id, "is_blacklisted": v})
+}
+
+func (h *Handler) Archive(w http.ResponseWriter, r *http.Request) {
+	if h.authz.Require(r.Context(), "visitors.archive") != nil {
+		httpx.Fail(w, apperr.Forbidden)
+		return
+	}
+	id, err := httpx.ID(chi.URLParam(r, "id"))
+	if err != nil {
+		httpx.Fail(w, apperr.InvalidID)
+		return
+	}
+	org, err := tenancy.ID(r.Context())
+	if err != nil {
+		httpx.Fail(w, apperr.TenantMissing)
+		return
+	}
+	if err = h.service.Archive(r.Context(), org, id); errors.Is(err, ErrNotFound) {
+		httpx.Fail(w, apperr.NotFound)
+		return
+	} else if err != nil {
+		httpx.Fail(w, apperr.Database)
+		return
+	}
+	h.audit.Record(r.Context(), audit.Entry{Action: "visitor.archived", ResourceType: "visitor", ResourceID: id})
+	httpx.OK(w, map[string]any{"id": id, "archived": true})
 }

@@ -1,0 +1,5 @@
+import tenantApi from '../../lib/tenant-api';
+import type {Envelope,Visitor,VisitorInput} from '../../lib/tenant-api';
+const getData=async<T>(url:string)=>{const r=await tenantApi.get<Envelope<T>>(url);return r.data.data};
+const mutate=async<T>(request:Promise<{data:Envelope<T>}>)=>(await request).data.data;
+export const visitorsApi={list:()=>getData<Visitor[]>('/api/v1/visitors/'),get:(id:number)=>getData<Visitor>(`/api/v1/visitors/${id}`),create:(input:VisitorInput)=>mutate(tenantApi.post<Envelope<Visitor>>('/api/v1/visitors/',input)),update:(id:number,input:VisitorInput)=>mutate(tenantApi.put<Envelope<{id:number}>>(`/api/v1/visitors/${id}`,input)),blacklist:(id:number)=>mutate(tenantApi.post<Envelope<{id:number;is_blacklisted:boolean}>>(`/api/v1/visitors/${id}/blacklist`)),unblacklist:(id:number)=>mutate(tenantApi.post<Envelope<{id:number;is_blacklisted:boolean}>>(`/api/v1/visitors/${id}/unblacklist`)),archive:(id:number)=>mutate(tenantApi.post<Envelope<{id:number;archived:boolean}>>(`/api/v1/visitors/${id}/archive`))};

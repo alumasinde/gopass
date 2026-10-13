@@ -6,6 +6,12 @@ import TenantLogin from '../modules/auth/TenantLogin';
 import TenantDashboard from '../modules/dashboard/TenantDashboard';
 import VisitorsPage from '../modules/visitors/VisitorsPage';
 import VisitsPage from '../modules/visits/VisitsPage';
+import SitesPage from '../modules/sites/SitesPage';
+import GatesPage from '../modules/gates/GatesPage';
+import PassTypesPage from '../modules/pass-types/PassTypesPage';
+import UsersPage from '../modules/users/UsersPage';
+import RolesPage from '../modules/roles/RolesPage';
+import OrganizationSettingsPage from '../modules/organization/OrganizationSettingsPage';
 
 function TenantProtectedRoute({ children, permission }: { children: ReactNode; permission?: string }) {
   const { isAuthenticated, isLoading, user } = useTenantAuth();
@@ -27,5 +33,11 @@ export const tenantRoutes = [
   { path: '/tenant/dashboard', element: <TenantProtectedRoute><TenantLayout><TenantDashboard /></TenantLayout></TenantProtectedRoute> },
   { path: '/tenant/visitors', element: <TenantProtectedRoute permission="visitors.view"><TenantLayout><VisitorsPage /></TenantLayout></TenantProtectedRoute> },
   { path: '/tenant/visits', element: <TenantProtectedRoute permission="gatepasses.view"><TenantLayout><VisitsPage /></TenantLayout></TenantProtectedRoute> },
+  { path: '/tenant/sites', element: <TenantProtectedRoute permission="sites.view"><TenantLayout><SitesPage /></TenantLayout></TenantProtectedRoute> },
+  { path: '/tenant/gates', element: <TenantProtectedRoute permission="gates.view"><TenantLayout><GatesPage /></TenantLayout></TenantProtectedRoute> },
+  { path: '/tenant/pass-types', element: <TenantProtectedRoute permission="pass_types.view"><TenantLayout><PassTypesPage /></TenantLayout></TenantProtectedRoute> },
+  { path: '/tenant/users', element: <TenantProtectedRoute permission="users.view"><TenantLayout><UsersPage /></TenantLayout></TenantProtectedRoute> },
+  { path: '/tenant/roles', element: <TenantProtectedRoute permission="roles.view"><TenantLayout><RolesPage /></TenantLayout></TenantProtectedRoute> },
+  { path: '/tenant/organization', element: <TenantProtectedRoute permission="organization.view"><TenantLayout><OrganizationSettingsPage /></TenantLayout></TenantProtectedRoute> },
   { path: '/tenant', element: <Navigate to="/tenant/dashboard" replace /> },
 ];

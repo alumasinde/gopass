@@ -10,6 +10,11 @@ export default function TenantDetail() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const [tenant, setTenant] = useState<Organization | null>(null);
+  const [editingIdentity, setEditingIdentity] = useState(false);
+  const [identityForm, setIdentityForm] = useState({name:'',slug:''});
+  const [identitySaving, setIdentitySaving] = useState(false);
+  const [identityError, setIdentityError] = useState('');
+  const [identityMessage, setIdentityMessage] = useState('');
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState('');
   const [databaseDSN, setDatabaseDSN] = useState('');
@@ -31,6 +36,7 @@ export default function TenantDetail() {
         setError('');
         const data = await platformOrganizations.get(Number(id));
         setTenant(data);
+        setIdentityForm({name:data.name,slug:data.slug});
       } catch (err: any) {
         setError(apiErrorMessage(err, 'Failed to fetch tenant details'));
       } finally {
@@ -49,6 +55,12 @@ export default function TenantDetail() {
       .catch((err) => { if (!cancelled) setDomainError(apiErrorMessage(err, 'Unable to load tenant domains. Apply platform migrations first if this is a new setup.')); });
     return () => { cancelled = true; };
   }, [id]);
+
+  const handleSaveIdentity = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault(); if(!tenant)return; setIdentitySaving(true);setIdentityError('');setIdentityMessage('');
+    try { const updated=await platformOrganizations.update(tenant.id,{name:identityForm.name.trim(),slug:identityForm.slug.trim().toLowerCase()});setTenant(current=>current?{...current,...updated}:updated);setIdentityForm({name:updated.name,slug:updated.slug});setEditingIdentity(false);setIdentityMessage('Tenant details updated.'); }
+    catch(err:any){setIdentityError(apiErrorMessage(err,'Tenant details could not be updated.'));}finally{setIdentitySaving(false)}
+  };
 
   const handleAddDomain = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -204,6 +216,12 @@ export default function TenantDetail() {
         <h1 className="extracted-style-56f51986ef">{tenant.name}</h1>
         <p className="extracted-style-5a784ab0d4">Slug: {tenant.slug}</p>
       </div>
+
+      <section className="crud-panel crud-tenant-identity">
+        <div className="crud-toolbar"><div><h2>Tenant identity</h2><p>Update the organization name or slug used in tenant URLs.</p></div>{!editingIdentity&&tenant.lifecycle_status==='ACTIVE'&&tenant.provisioning_status==='READY'&&<button type="button" className="crud-button crud-button-muted" onClick={()=>setEditingIdentity(true)}>Edit details</button>}</div>
+        {identityMessage&&<div className="crud-notice">{identityMessage}</div>}{identityError&&<div className="crud-inline-error" role="alert">{identityError}</div>}
+        {editingIdentity&&<form className="crud-settings-form" onSubmit={handleSaveIdentity}><label className="crud-field"><span>Organization name *</span><input required value={identityForm.name} onChange={e=>setIdentityForm(v=>({...v,name:e.target.value}))}/></label><label className="crud-field"><span>Tenant slug *</span><input required pattern="[a-z0-9]+(?:-[a-z0-9]+)*" value={identityForm.slug} onChange={e=>setIdentityForm(v=>({...v,slug:e.target.value.toLowerCase()}))}/><small>Changing this changes the tenant's local hostname and login URL.</small></label><footer className="crud-modal-footer"><button type="button" className="crud-button crud-button-muted" onClick={()=>{setEditingIdentity(false);setIdentityForm({name:tenant.name,slug:tenant.slug});}} disabled={identitySaving}>Cancel</button><button className="crud-button crud-button-primary" disabled={identitySaving}>{identitySaving?'Saving…':'Save details'}</button></footer></form>}
+      </section>
 
       <div className="extracted-style-ba72f8a298">
         <div className="extracted-style-79442ed173">

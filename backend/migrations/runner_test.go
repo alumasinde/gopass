@@ -10,8 +10,8 @@ func TestEmbeddedMigrationsAreOrderedAndNamed(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(all) < 11 {
-		t.Fatalf("expected at least 11 embedded migrations, got %d", len(all))
+	if len(all) < 12 {
+		t.Fatalf("expected at least 12 embedded migrations, got %d", len(all))
 	}
 	for i, migration := range all {
 		if migration.Version < 1 || migration.Name == "" || migration.SQL == "" {
@@ -21,8 +21,8 @@ func TestEmbeddedMigrationsAreOrderedAndNamed(t *testing.T) {
 			t.Fatalf("migrations are not strictly ordered: %d then %d", all[i-1].Version, migration.Version)
 		}
 	}
-	if all[len(all)-1].Version != 11 || all[len(all)-1].Name != "remove_legacy_platform_tables" {
-		t.Fatalf("expected migration 0011_remove_legacy_platform_tables, got %#v", all[len(all)-1])
+	if all[len(all)-1].Version != 12 || all[len(all)-1].Name != "visitors_archive" {
+		t.Fatalf("expected migration 0012_visitors_archive, got %#v", all[len(all)-1])
 	}
 }
 

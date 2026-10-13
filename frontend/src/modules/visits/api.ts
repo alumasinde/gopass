@@ -1,0 +1,5 @@
+import tenantApi from '../../lib/tenant-api';
+import type {Envelope,Gatepass,CreateGatepassInput,TenantGate,PassType} from '../../lib/tenant-api';
+const getData=async<T>(url:string)=>{const r=await tenantApi.get<Envelope<T>>(url);return r.data.data};
+const mutate=async<T>(request:Promise<{data:Envelope<T>}>)=>(await request).data.data;
+export const visitsApi={list:()=>getData<Gatepass[]>('/api/v1/gatepasses/'),gates:()=>getData<TenantGate[]>('/api/v1/gates/'),passTypes:()=>getData<PassType[]>('/api/v1/pass-types/'),create:(input:CreateGatepassInput)=>mutate(tenantApi.post<Envelope<Gatepass>>('/api/v1/gatepasses/',input)),update:(id:number,input:CreateGatepassInput)=>mutate(tenantApi.put<Envelope<Gatepass>>(`/api/v1/gatepasses/${id}`,input)),submit:(id:number)=>mutate(tenantApi.post<Envelope<{id:number;status:string}>>(`/api/v1/gatepasses/${id}/submit`)),cancel:(id:number)=>mutate(tenantApi.post<Envelope<{id:number;status:string}>>(`/api/v1/gatepasses/${id}/cancel`)),revoke:(id:number)=>mutate(tenantApi.post<Envelope<{id:number;status:string}>>(`/api/v1/gatepasses/${id}/revoke`))};

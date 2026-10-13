@@ -12,7 +12,7 @@ type Service struct{ db database.Handle }
 
 func NewService(db any) *Service { return &Service{database.Adapt(db)} }
 func (s *Service) List(c context.Context, o int64) ([]Visitor, error) {
-	rows, e := s.db.QueryContext(c, `SELECT id,organization_id,first_name,last_name,COALESCE(phone,''),COALESCE(email,''),is_blacklisted FROM visitors WHERE organization_id=? ORDER BY id DESC LIMIT 200`, o)
+	rows, e := s.db.QueryContext(c, `SELECT id,organization_id,first_name,last_name,COALESCE(phone,''),COALESCE(email,''),is_blacklisted FROM visitors WHERE organization_id=? AND archived_at IS NULL ORDER BY id DESC LIMIT 200`, o)
 	if e != nil {
 		return nil, e
 	}
@@ -29,7 +29,7 @@ func (s *Service) List(c context.Context, o int64) ([]Visitor, error) {
 }
 func (s *Service) Get(c context.Context, o, id int64) (*Visitor, error) {
 	var v Visitor
-	e := s.db.QueryRowContext(c, `SELECT id,organization_id,first_name,last_name,COALESCE(phone,''),COALESCE(email,''),is_blacklisted FROM visitors WHERE organization_id=? AND id=?`, o, id).Scan(&v.ID, &v.OrganizationID, &v.FirstName, &v.LastName, &v.Phone, &v.Email, &v.IsBlacklisted)
+	e := s.db.QueryRowContext(c, `SELECT id,organization_id,first_name,last_name,COALESCE(phone,''),COALESCE(email,''),is_blacklisted FROM visitors WHERE organization_id=? AND id=? AND archived_at IS NULL`, o, id).Scan(&v.ID, &v.OrganizationID, &v.FirstName, &v.LastName, &v.Phone, &v.Email, &v.IsBlacklisted)
 	if errors.Is(e, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -73,6 +73,6 @@ func (s *Service) Archive(c context.Context, o, id int64) error {
 	if _, e := s.Get(c, o, id); e != nil {
 		return e
 	}
-	_, e := s.db.ExecContext(c, `UPDATE visitors SET updated_at=UTC_TIMESTAMP() WHERE organization_id=? AND id=?`, o, id)
+	_, e := s.db.ExecContext(c, `UPDATE visitors SET archived_at=UTC_TIMESTAMP(),updated_at=UTC_TIMESTAMP() WHERE organization_id=? AND id=? AND archived_at IS NULL`, o, id)
 	return e
 }

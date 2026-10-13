@@ -27,6 +27,7 @@ func (h *Handler) registerRoutes(r chi.Router) {
 		r.Get("/", h.List)
 		r.Post("/", h.Create)
 		r.Get("/{id}", h.Get)
+		r.Put("/{id}", h.Update)
 		r.Post("/{id}/submit", h.Submit)
 		r.Post("/{id}/cancel", h.Cancel)
 		r.Post("/{id}/revoke", h.Revoke)
@@ -172,4 +173,70 @@ func (h *Handler) transition(w http.ResponseWriter, r *http.Request, to string) 
 		return
 	}
 	httpx.OK(w, map[string]any{"id": id, "status": to})
+}
+
+func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
+	if h.authz.Require(r.Context(), "gatepasses.update") != nil {
+		httpx.Fail(w, apperr.Forbidden)
+		return
+	}
+	id, err := httpx.ID(chi.URLParam(r, "id"))
+	if err != nil {
+		httpx.Fail(w, apperr.InvalidID)
+		return
+	}
+	var in struct {
+		VisitorID  int64  `json:"visitor_id"`
+		GateID     int64  `json:"gate_id"`
+		PassTypeID int64  `json:"pass_type_id"`
+		ValidFrom  string `json:"valid_from"`
+		ValidUntil string `json:"valid_until"`
+	}
+	if httpx.Decode(r, &in) != nil {
+		httpx.Fail(w, apperr.InvalidJSON)
+		return
+	}
+	vf, err := time.Parse(time.RFC3339, in.ValidFrom)
+	if err != nil {
+		httpx.Fail(w, apperr.InvalidRequest.With("valid_from must be RFC3339"))
+		return
+	}
+	vu, err := time.Parse(time.RFC3339, in.ValidUntil)
+	if err != nil {
+		httpx.Fail(w, apperr.InvalidRequest.With("valid_until must be RFC3339"))
+		return
+	}
+	o, _ := tenancy.ID(r.Context())
+	current, err := h.service.Get(r.Context(), o, id)
+	if errors.Is(err, ErrNotFound) || current == nil {
+		httpx.Fail(w, apperr.NotFound)
+		return
+	}
+	if err != nil {
+		httpx.Fail(w, apperr.Database)
+		return
+	}
+	if current.Status != StatusDraft {
+		httpx.Fail(w, apperr.Conflict.With("only draft gatepasses can be edited"))
+		return
+	}
+	if err = h.service.RequireGateScope(r.Context(), "gatepasses.update", in.GateID); err != nil {
+		httpx.Fail(w, apperr.Forbidden)
+		return
+	}
+	updated, err := h.service.UpdateDraft(r.Context(), o, id, in.VisitorID, in.GateID, in.PassTypeID, vf, vu)
+	if errors.Is(err, ErrNotFound) {
+		httpx.Fail(w, apperr.NotFound)
+	} else if errors.Is(err, ErrInvalid) {
+		httpx.Fail(w, apperr.InvalidRequest)
+	} else if errors.Is(err, ErrBlacklisted) {
+		httpx.Fail(w, apperr.Conflict.With("visitor is blacklisted"))
+	} else if errors.Is(err, ErrTransition) {
+		httpx.Fail(w, apperr.Conflict.With("only draft gatepasses can be edited"))
+	} else if err != nil {
+		httpx.Fail(w, apperr.Database)
+	} else {
+		h.audit.Record(r.Context(), audit.Entry{Action: "gatepass.updated", ResourceType: "gatepass", ResourceID: id})
+		httpx.OK(w, updated)
+	}
 }

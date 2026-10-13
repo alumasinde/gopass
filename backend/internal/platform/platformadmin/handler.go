@@ -45,12 +45,14 @@ type Handler struct {
 	tenantPools   interface {
 		Invalidate(int64)
 		RevokeSessions(context.Context, int64) error
+		SyncOrganizationMetadata(context.Context, int64, string, string) error
 	}
 }
 
 func New(db *sql.DB, tokens *auth.Service, pools ...interface {
 	Invalidate(int64)
 	RevokeSessions(context.Context, int64) error
+	SyncOrganizationMetadata(context.Context, int64, string, string) error
 }) *Handler {
 	h := &Handler{db: db, tokens: tokens, encryptionKey: encryptionKeyFromEnv(os.Getenv("PLATFORM_DB_ENCRYPTION_KEY")), rateLimiter: ratelimit.NewRateLimiter()}
 	if len(pools) > 0 {
@@ -81,9 +83,12 @@ func (h *Handler) RegisterRoutes(r chi.Router) {
 		p.Get("/platform/admins", h.ListAdmins)
 		p.Post("/platform/admins", h.CreateAdmin)
 		p.Patch("/platform/admins/{id}/suspend", h.SuspendAdmin)
+		p.Patch("/platform/admins/{id}/resume", h.ResumeAdmin)
+		p.Put("/platform/admins/{id}", h.UpdateAdmin)
 		p.Get("/platform/organizations", h.ListOrganizations)
 		p.Post("/platform/organizations", h.CreateOrganization)
 		p.Get("/platform/organizations/{id}", h.GetOrganization)
+		p.Put("/platform/organizations/{id}", h.UpdateOrganization)
 		p.Patch("/platform/organizations/{id}/suspend", h.Suspend)
 		p.Patch("/platform/organizations/{id}/resume", h.Resume)
 		p.Post("/platform/organizations/{id}/database-config", h.SetDatabaseConfig)
@@ -1484,4 +1489,135 @@ func scanOrg(s scanner) (map[string]any, error) {
 		out["suspended_at"] = suspended.Time
 	}
 	return out, nil
+}
+
+func (h *Handler) ResumeAdmin(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathID(w, r)
+	if !ok {
+		return
+	}
+	claims, _ := auth.From(r.Context())
+	var email, name string
+	var active bool
+	err := h.db.QueryRowContext(r.Context(), `SELECT email,display_name,is_active FROM platform_users WHERE id=?`, id).Scan(&email, &name, &active)
+	if errors.Is(err, sql.ErrNoRows) {
+		httpx.Fail(w, apperr.NotFound)
+		return
+	}
+	if err != nil {
+		httpx.Fail(w, apperr.Database)
+		return
+	}
+	if _, err = h.db.ExecContext(r.Context(), `UPDATE platform_users SET is_active=1,updated_at=UTC_TIMESTAMP() WHERE id=?`, id); err != nil {
+		httpx.Fail(w, apperr.Database)
+		return
+	}
+	if err = h.auditStandalone(r.Context(), claims.UserID, "platform.admin_resumed", "platform_user", id, map[string]any{"email": email, "is_active": active}, map[string]any{"email": email, "is_active": true}); err != nil {
+		httpx.Fail(w, apperr.Database)
+		return
+	}
+	httpx.OK(w, map[string]any{"id": id, "email": email, "display_name": name, "is_active": true, "requires_login": !active})
+}
+func (h *Handler) UpdateAdmin(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathID(w, r)
+	if !ok {
+		return
+	}
+	var in struct {
+		Email       string `json:"email"`
+		DisplayName string `json:"display_name"`
+	}
+	if httpx.Decode(r, &in) != nil {
+		httpx.Fail(w, apperr.InvalidJSON)
+		return
+	}
+	in.Email = strings.ToLower(strings.TrimSpace(in.Email))
+	in.DisplayName = strings.TrimSpace(in.DisplayName)
+	addr, err := mail.ParseAddress(in.Email)
+	if err != nil || strings.ToLower(addr.Address) != in.Email || in.DisplayName == "" {
+		httpx.Fail(w, apperr.InvalidRequest.With("valid email and display_name are required"))
+		return
+	}
+	var oldEmail, oldName string
+	if err = h.db.QueryRowContext(r.Context(), `SELECT email,display_name FROM platform_users WHERE id=?`, id).Scan(&oldEmail, &oldName); errors.Is(err, sql.ErrNoRows) {
+		httpx.Fail(w, apperr.NotFound)
+		return
+	} else if err != nil {
+		httpx.Fail(w, apperr.Database)
+		return
+	}
+	if _, err = h.db.ExecContext(r.Context(), `UPDATE platform_users SET email=?,display_name=?,updated_at=UTC_TIMESTAMP() WHERE id=?`, in.Email, in.DisplayName, id); err != nil {
+		httpx.Fail(w, apperr.Conflict.With("email already exists or administrator could not be updated"))
+		return
+	}
+	claims, _ := auth.From(r.Context())
+	if err = h.auditStandalone(r.Context(), claims.UserID, "platform.admin_updated", "platform_user", id, map[string]any{"email": oldEmail, "display_name": oldName}, map[string]any{"email": in.Email, "display_name": in.DisplayName}); err != nil {
+		httpx.Fail(w, apperr.Database)
+		return
+	}
+	httpx.OK(w, map[string]any{"id": id, "email": in.Email, "display_name": in.DisplayName})
+}
+
+func (h *Handler) UpdateOrganization(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathID(w, r)
+	if !ok {
+		return
+	}
+	var in struct {
+		Name string `json:"name"`
+		Slug string `json:"slug"`
+	}
+	if httpx.Decode(r, &in) != nil {
+		httpx.Fail(w, apperr.InvalidJSON)
+		return
+	}
+	in.Name = strings.TrimSpace(in.Name)
+	in.Slug = strings.ToLower(strings.TrimSpace(in.Slug))
+	if in.Name == "" || !regexp.MustCompile(`^[a-z0-9]+(?:-[a-z0-9]+)*$`).MatchString(in.Slug) {
+		httpx.Fail(w, apperr.InvalidRequest.With("name and a valid lowercase slug are required"))
+		return
+	}
+	var oldName, oldSlug string
+	var lifecycle, provisioning string
+	if err := h.db.QueryRowContext(r.Context(), `SELECT name,slug,lifecycle_status,provisioning_status FROM organizations WHERE id=?`, id).Scan(&oldName, &oldSlug, &lifecycle, &provisioning); errors.Is(err, sql.ErrNoRows) {
+		httpx.Fail(w, apperr.NotFound)
+		return
+	} else if err != nil {
+		httpx.Fail(w, apperr.Database)
+		return
+	}
+	if lifecycle != "ACTIVE" || provisioning != "READY" {
+		httpx.Fail(w, apperr.Conflict.With("only active, ready tenants can be edited"))
+		return
+	}
+	claims, _ := auth.From(r.Context())
+	tx, err := h.db.BeginTx(r.Context(), nil)
+	if err != nil {
+		httpx.Fail(w, apperr.Database)
+		return
+	}
+	defer tx.Rollback()
+	if _, err = tx.ExecContext(r.Context(), `UPDATE organizations SET name=?,slug=?,updated_at=UTC_TIMESTAMP() WHERE id=?`, in.Name, in.Slug, id); err != nil {
+		httpx.Fail(w, apperr.Conflict.With("tenant slug is already in use or details could not be saved"))
+		return
+	}
+	if err = tx.Commit(); err != nil {
+		httpx.Fail(w, apperr.Database)
+		return
+	}
+	if h.tenantPools != nil {
+		if err = h.tenantPools.SyncOrganizationMetadata(r.Context(), id, in.Name, in.Slug); err != nil {
+			_, _ = h.db.ExecContext(r.Context(), `UPDATE organizations SET name=?,slug=?,updated_at=UTC_TIMESTAMP() WHERE id=?`, oldName, oldSlug, id)
+			httpx.Fail(w, apperr.Conflict.With("tenant database could not be synchronized; previous platform values were restored where possible"))
+			return
+		}
+	}
+	if err = h.auditStandalone(r.Context(), claims.UserID, "platform.organization_updated", "organization", id, map[string]any{"name": oldName, "slug": oldSlug}, map[string]any{"name": in.Name, "slug": in.Slug}); err != nil {
+		httpx.Fail(w, apperr.Database)
+		return
+	}
+	if h.tenantPools != nil {
+		h.tenantPools.Invalidate(id)
+	}
+	httpx.OK(w, map[string]any{"id": id, "name": in.Name, "slug": in.Slug})
 }

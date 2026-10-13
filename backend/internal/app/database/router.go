@@ -739,6 +739,13 @@ func (r *Router) SharedDatabaseName(ctx context.Context) (string, error) {
 	return name, err
 }
 
+// DatabaseForTenant returns the database selected by the router for controlled
+// operational tasks such as applying tenant migrations. Callers must bind the
+// tenant context and must never expose the returned handle to an HTTP client.
+func (r *Router) DatabaseForTenant(ctx context.Context, orgID int64) (*sql.DB, error) {
+	return r.resolve(tenancy.With(ctx, orgID))
+}
+
 func (r *Router) TenantIDs(ctx context.Context) ([]int64, error) {
 	rows, err := r.platform.QueryContext(ctx, `SELECT id FROM organizations WHERE is_active=1 AND lifecycle_status='ACTIVE' AND provisioning_status='READY' ORDER BY id`)
 	if err != nil {
@@ -847,6 +854,19 @@ func (r *Router) RevokeSessions(ctx context.Context, orgID int64) error {
 
 // Invalidate closes and forgets a tenant pool after suspension, deprovisioning,
 // or database credential rotation.
+
+// SyncOrganizationMetadata updates the tenant-local organization identity after
+// the platform registry has validated the new globally unique name and slug.
+func (r *Router) SyncOrganizationMetadata(ctx context.Context, orgID int64, name, slug string) error {
+	ctx = tenancy.With(ctx, orgID)
+	db, err := r.resolve(ctx)
+	if err != nil {
+		return err
+	}
+	_, err = db.ExecContext(ctx, `UPDATE organizations SET name=?,slug=?,updated_at=UTC_TIMESTAMP() WHERE id=?`, name, slug, orgID)
+	return err
+}
+
 func (r *Router) Invalidate(orgID int64) {
 	r.mu.Lock()
 	defer r.mu.Unlock()

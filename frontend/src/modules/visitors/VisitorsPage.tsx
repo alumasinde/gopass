@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import type { FormEvent } from 'react';
-import { tenantApiErrorMessage, tenantVisitorsApi } from '../../lib/tenant-api';
+import { tenantApiErrorMessage } from '../../lib/tenant-api';
+import { visitorsApi } from './api';
 import type { Visitor, VisitorInput } from '../../lib/tenant-api';
 import { useTenantAuth } from '../../contexts/TenantAuthContext';
 
@@ -19,6 +20,7 @@ export default function VisitorsPage() {
   const canCreate = permissions.has('visitors.register');
   const canUpdate = permissions.has('visitors.update');
   const canBlacklist = permissions.has('visitors.blacklist');
+  const canArchive = permissions.has('visitors.archive');
   const [visitors, setVisitors] = useState<Visitor[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -39,7 +41,7 @@ export default function VisitorsPage() {
     if (quiet) setRefreshing(true); else setLoading(true);
     setError('');
     try {
-      const rows = await tenantVisitorsApi.list();
+      const rows = await visitorsApi.list();
       setVisitors(Array.isArray(rows) ? rows : []);
       setSelected((current) => current ? (rows.find((row) => row.id === current.id) ?? null) : null);
     } catch (err) {
@@ -79,10 +81,10 @@ export default function VisitorsPage() {
     try {
       const payload = { ...form, first_name: form.first_name.trim(), last_name: form.last_name.trim(), phone: form.phone.trim(), email: form.email.trim() };
       if (editing) {
-        await tenantVisitorsApi.update(editing.id, payload);
+        await visitorsApi.update(editing.id, payload);
         setNotice('Visitor details updated.');
       } else {
-        const created = await tenantVisitorsApi.create(payload);
+        const created = await visitorsApi.create(payload);
         setSelected(created);
         setNotice('Visitor registered successfully.');
       }
@@ -97,11 +99,20 @@ export default function VisitorsPage() {
     if (!confirmed) return;
     setActionId(visitor.id); setError(''); setNotice('');
     try {
-      if (visitor.is_blacklisted) await tenantVisitorsApi.unblacklist(visitor.id);
-      else await tenantVisitorsApi.blacklist(visitor.id);
+      if (visitor.is_blacklisted) await visitorsApi.unblacklist(visitor.id);
+      else await visitorsApi.blacklist(visitor.id);
       setNotice(visitor.is_blacklisted ? 'Visitor removed from blacklist.' : 'Visitor added to blacklist.');
       await load(true);
     } catch (err) { setError(tenantApiErrorMessage(err, 'Visitor status could not be changed.')); }
+    finally { setActionId(null); }
+  };
+
+
+  const archiveVisitor = async (visitor: Visitor) => {
+    if (!window.confirm(`Archive ${displayName(visitor)}? Historical gatepass records will be retained.`)) return;
+    setActionId(visitor.id); setError(''); setNotice('');
+    try { await visitorsApi.archive(visitor.id); setNotice('Visitor archived. Historical access records are retained.'); setSelected(current => current?.id === visitor.id ? null : current); await load(true); }
+    catch (err) { setError(tenantApiErrorMessage(err, 'Visitor could not be archived.')); }
     finally { setActionId(null); }
   };
 
@@ -134,7 +145,7 @@ export default function VisitorsPage() {
             <td>{visitor.phone || <span className="module-muted">No phone</span>}</td>
             <td><span className={`module-status ${visitor.is_blacklisted ? 'module-status-danger' : 'module-status-success'}`}><i />{visitor.is_blacklisted ? 'Blacklisted' : 'Active'}</span></td>
             <td><span className="module-id">VIS-{String(visitor.id).padStart(5, '0')}</span></td>
-            <td><div className="module-row-actions">{canUpdate && <button type="button" className="module-icon-button" aria-label={`Edit ${displayName(visitor)}`} title="Edit visitor" onClick={() => openEdit(visitor)}>✎</button>}{canBlacklist && <button type="button" className={`module-icon-button${visitor.is_blacklisted ? ' module-icon-button-positive' : ' module-icon-button-danger'}`} disabled={actionId === visitor.id} title={visitor.is_blacklisted ? 'Remove from blacklist' : 'Blacklist visitor'} aria-label={visitor.is_blacklisted ? 'Remove from blacklist' : 'Blacklist visitor'} onClick={() => void toggleBlacklist(visitor)}>{visitor.is_blacklisted ? '↶' : '⊘'}</button>}<button type="button" className="module-icon-button" title="View details" aria-label={`View ${displayName(visitor)}`} onClick={() => setSelected(visitor)}>→</button></div></td>
+            <td><div className="module-row-actions">{canUpdate && <button type="button" className="module-icon-button" aria-label={`Edit ${displayName(visitor)}`} title="Edit visitor" onClick={() => openEdit(visitor)}>✎</button>}{canBlacklist && <button type="button" className={`module-icon-button${visitor.is_blacklisted ? ' module-icon-button-positive' : ' module-icon-button-danger'}`} disabled={actionId === visitor.id} title={visitor.is_blacklisted ? 'Remove from blacklist' : 'Blacklist visitor'} aria-label={visitor.is_blacklisted ? 'Remove from blacklist' : 'Blacklist visitor'} onClick={() => void toggleBlacklist(visitor)}>{visitor.is_blacklisted ? '↶' : '⊘'}</button>}{canArchive && <button type="button" className="module-icon-button module-icon-button-danger" disabled={actionId === visitor.id} title="Archive visitor" aria-label="Archive visitor" onClick={() => void archiveVisitor(visitor)}>⌫</button>}<button type="button" className="module-icon-button" title="View details" aria-label={`View ${displayName(visitor)}`} onClick={() => setSelected(visitor)}>→</button></div></td>
           </tr>)}</tbody></table></div>
         )}
       </div>

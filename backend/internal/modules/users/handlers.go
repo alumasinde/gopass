@@ -58,7 +58,13 @@ func NewAuthService(db any, tokens *auth.Service, auditServices ...*audit.Servic
 func (h *Handler) SetPlatformDB(db any) { h.platform = database.Adapt(db) }
 
 func (h *Handler) registerRoutes(r chi.Router) {
-	r.Route("/users", func(r chi.Router) { r.Get("/", h.List); r.Post("/", h.Create); r.Get("/{id}", h.Get) })
+	r.Route("/users", func(r chi.Router) {
+		r.Get("/", h.List)
+		r.Post("/", h.Create)
+		r.Get("/{id}", h.Get)
+		r.Put("/{id}", h.Update)
+		r.Patch("/{id}/status", h.SetStatus)
+	})
 }
 
 // registerAuthRoutes mounts the public authentication endpoints.
@@ -411,4 +417,79 @@ func clientIP(remoteAddr string) string {
 		return host
 	}
 	return strings.TrimSpace(remoteAddr)
+}
+
+func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
+	if h.authz.Require(r.Context(), "users.update") != nil {
+		httpx.Fail(w, apperr.Forbidden)
+		return
+	}
+	id, err := httpx.ID(chi.URLParam(r, "id"))
+	if err != nil {
+		httpx.Fail(w, apperr.InvalidID)
+		return
+	}
+	var in struct {
+		FirstName string `json:"first_name"`
+		LastName  string `json:"last_name"`
+		Email     string `json:"email"`
+	}
+	if httpx.Decode(r, &in) != nil || strings.TrimSpace(in.FirstName) == "" || strings.TrimSpace(in.LastName) == "" || !isValidEmail(strings.ToLower(strings.TrimSpace(in.Email))) {
+		httpx.Fail(w, apperr.InvalidRequest)
+		return
+	}
+	org, _ := tenancy.ID(r.Context())
+	user, err := h.Service.GetUser(r.Context(), org, id)
+	if err != nil || user == nil {
+		httpx.Fail(w, apperr.NotFound)
+		return
+	}
+	user.FirstName = strings.TrimSpace(in.FirstName)
+	user.LastName = strings.TrimSpace(in.LastName)
+	user.Email = strings.ToLower(strings.TrimSpace(in.Email))
+	if err = h.Service.UpdateUser(r.Context(), org, user); err != nil {
+		httpx.Fail(w, apperr.Conflict.With("user details could not be updated"))
+		return
+	}
+	h.audit.Record(r.Context(), audit.Entry{Action: "user.updated", ResourceType: "user", ResourceID: id})
+	httpx.OK(w, map[string]any{"id": id, "first_name": user.FirstName, "last_name": user.LastName, "email": user.Email, "is_active": user.IsActive})
+}
+func (h *Handler) SetStatus(w http.ResponseWriter, r *http.Request) {
+	if h.authz.Require(r.Context(), "users.disable") != nil {
+		httpx.Fail(w, apperr.Forbidden)
+		return
+	}
+	id, err := httpx.ID(chi.URLParam(r, "id"))
+	if err != nil {
+		httpx.Fail(w, apperr.InvalidID)
+		return
+	}
+	var in struct {
+		IsActive *bool `json:"is_active"`
+	}
+	if httpx.Decode(r, &in) != nil || in.IsActive == nil {
+		httpx.Fail(w, apperr.InvalidRequest.With("is_active is required"))
+		return
+	}
+	claims, _ := auth.From(r.Context())
+	if !*in.IsActive && claims.UserID == id {
+		httpx.Fail(w, apperr.Conflict.With("you cannot disable your own account"))
+		return
+	}
+	org, _ := tenancy.ID(r.Context())
+	user, err := h.Service.GetUser(r.Context(), org, id)
+	if err != nil || user == nil {
+		httpx.Fail(w, apperr.NotFound)
+		return
+	}
+	user.IsActive = *in.IsActive
+	if err = h.Service.UpdateUser(r.Context(), org, user); err != nil {
+		httpx.Fail(w, apperr.Database)
+		return
+	}
+	if !user.IsActive {
+		_ = h.Service.LogoutAll(r.Context(), id)
+	}
+	h.audit.Record(r.Context(), audit.Entry{Action: "user.status_changed", ResourceType: "user", ResourceID: id, NewValues: map[string]any{"is_active": user.IsActive}})
+	httpx.OK(w, map[string]any{"id": id, "is_active": user.IsActive})
 }
