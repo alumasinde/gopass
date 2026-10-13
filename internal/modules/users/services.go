@@ -144,64 +144,45 @@ func (s *Service) Authenticate(ctx context.Context, orgID int64, email, password
 
 	// Store hashed refresh token
 	tokenHash := hashToken(refreshToken)
-	expiresAt := time.Now().UTC().Add(s.auth.RefreshTTL).Format(time.RFC3339)
-	if err := s.repo.StoreRefreshToken(ctx, user.ID, orgID, tokenHash, expiresAt); err != nil {
+	if err := s.repo.StoreRefreshToken(ctx, user.ID, orgID, tokenHash, time.Now().UTC().Add(s.auth.RefreshTTL)); err != nil {
 		return nil, "", "", err
 	}
 
 	return user, accessToken, refreshToken, nil
 }
 
-func (s *Service) RefreshToken(ctx context.Context, refreshToken string) (string, error) {
+func (s *Service) RefreshToken(ctx context.Context, refreshToken string) (string, string, error) {
 	claims, err := s.auth.Parse(refreshToken)
-	if err != nil {
-		return "", err
-	}
-	if claims.Type != "refresh" {
-		return "", errors.New("invalid refresh token")
-	}
-
-	// Check if refresh token is valid and not revoked
-	tokenHash := hashToken(refreshToken)
-	valid, err := s.repo.IsRefreshTokenValid(ctx, tokenHash)
-	if err != nil {
-		return "", err
-	}
-	if !valid {
-		return "", errors.New("invalid or revoked refresh token")
+	if err != nil || claims.Type != "refresh" {
+		return "", "", errors.New("invalid refresh token")
 	}
 
 	user, err := s.repo.GetByID(ctx, claims.OrgID, claims.UserID)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	if user == nil || !user.IsActive {
-		return "", ErrUserNotFound
-	}
-
-	// Rotate: revoke old token and issue new one
-	if err := s.repo.RevokeRefreshToken(ctx, tokenHash); err != nil {
-		return "", err
+		return "", "", ErrUserNotFound
 	}
 
 	newAccessToken, err := s.auth.Issue(claims.UserID, claims.OrgID, false)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
-
 	newRefreshToken, err := s.auth.Issue(claims.UserID, claims.OrgID, true)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 
-	// Store new hashed refresh token
-	newTokenHash := hashToken(newRefreshToken)
-	expiresAt := time.Now().UTC().Add(s.auth.RefreshTTL).Format(time.RFC3339)
-	if err := s.repo.StoreRefreshToken(ctx, user.ID, claims.OrgID, newTokenHash, expiresAt); err != nil {
-		return "", err
+	// The repository consumes the old token and inserts the replacement in one
+	// transaction. Exactly one concurrent request can consume the old token.
+	oldHash := hashToken(refreshToken)
+	newHash := hashToken(newRefreshToken)
+	expiresAt := time.Now().UTC().Add(s.auth.RefreshTTL)
+	if err := s.repo.RotateRefreshToken(ctx, oldHash, claims.UserID, claims.OrgID, newHash, expiresAt); err != nil {
+		return "", "", err
 	}
-
-	return newAccessToken, nil
+	return newAccessToken, newRefreshToken, nil
 }
 
 func (s *Service) Logout(ctx context.Context, refreshToken string) error {

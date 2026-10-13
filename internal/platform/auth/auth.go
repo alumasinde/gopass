@@ -2,6 +2,8 @@ package auth
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"time"
 
@@ -38,7 +40,13 @@ func (s *Service) Issue(uid, oid int64, refresh bool) (string, error) {
 		t = "refresh"
 	}
 	n := time.Now()
-	c := Claims{uid, oid, t, jwt.RegisteredClaims{Issuer: s.Issuer, Subject: "user", IssuedAt: jwt.NewNumericDate(n), ExpiresAt: jwt.NewNumericDate(n.Add(ttl))}}
+	// A random JWT ID prevents tokens issued for the same user within the same
+	// second from being byte-for-byte identical (important for refresh rotation).
+	var nonce [16]byte
+	if _, err := rand.Read(nonce[:]); err != nil {
+		return "", err
+	}
+	c := Claims{uid, oid, t, jwt.RegisteredClaims{Issuer: s.Issuer, Subject: "user", ID: hex.EncodeToString(nonce[:]), IssuedAt: jwt.NewNumericDate(n), ExpiresAt: jwt.NewNumericDate(n.Add(ttl))}}
 	return jwt.NewWithClaims(jwt.SigningMethodHS256, c).SignedString([]byte(s.Secret))
 }
 func (s *Service) Parse(tok string) (*Claims, error) {

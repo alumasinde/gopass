@@ -50,7 +50,7 @@ func New(cfg config.Config) (*App, error) {
 	tokens := auth.New(cfg.JWTSecret, cfg.JWTIssuer, cfg.AccessTTL, cfg.RefreshTTL)
 	az := rbac.New(db)
 	au := audit.New(db, l)
-	authHandler := users.NewAuthService(db, tokens)
+	authHandler := users.NewAuthService(db, tokens, au)
 	usersHandler := users.NewHandler(db, az, au)
 	d := routes.Dependencies{Auth: authHandler, Authz: az, Audit: au, Users: usersHandler, Organizations: organizations.NewHandler(db, az, au), Roles: roles.NewHandler(db, az, au), Sites: sites.NewHandler(db, az, au), Gates: gates.NewHandler(db, az, au), Visitors: visitors.NewHandler(db, az, au), Gatepasses: gatepasses.NewHandler(db, az, au), Approvals: approvals.NewHandler(db, az, au), Credentials: credentials.NewHandler(db, az, au), Checkins: checkins.NewHandler(db, az, au), Checkouts: checkouts.NewHandler(db, az, au), PassTypes: passtypes.NewHandler(db, az, au)}
 	r := chi.NewRouter()

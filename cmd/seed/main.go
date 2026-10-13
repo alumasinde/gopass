@@ -16,8 +16,8 @@ import (
 
 func main() {
 	_ = godotenv.Load()
-dsn := config.DSN()
-db, e := database.Open(context.Background(), dsn)
+	dsn := config.DSN()
+	db, e := database.Open(context.Background(), dsn)
 
 	if e != nil {
 		log.Fatal(e)

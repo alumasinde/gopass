@@ -256,7 +256,7 @@ func validTransition(from, to string) bool {
 	case StatusDraft:
 		return to == StatusCancelled
 
-	case StatusPendingApproval: 
+	case StatusPendingApproval:
 		return to == StatusCancelled
 
 	case StatusApproved:

@@ -3,7 +3,9 @@ package users
 import (
 	"context"
 	"database/sql"
+	"net"
 	"net/http"
+	"strings"
 
 	"github.com/alumasinde/gopass/internal/platform/apperr"
 	"github.com/alumasinde/gopass/internal/platform/audit"
@@ -33,9 +35,13 @@ func NewHandler(db *sql.DB, a *rbac.Service, au *audit.Service) *Handler {
 	return &Handler{db: db, authz: a, audit: au, Service: NewService(repo, nil), rateLimiter: ratelimit.NewRateLimiter()}
 }
 
-func NewAuthService(db *sql.DB, tokens *auth.Service) *Handler {
+func NewAuthService(db *sql.DB, tokens *auth.Service, auditServices ...*audit.Service) *Handler {
 	repo := NewRepository(db)
-	return &Handler{db: db, Service: NewService(repo, tokens), Auth: tokens}
+	h := &Handler{db: db, Service: NewService(repo, tokens), Auth: tokens, rateLimiter: ratelimit.NewRateLimiter()}
+	if len(auditServices) > 0 {
+		h.audit = auditServices[0]
+	}
+	return h
 }
 
 func (h *Handler) registerRoutes(r chi.Router) {
@@ -62,7 +68,11 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Rate limiting check
-	ip := r.RemoteAddr
+	ip := clientIP(r.RemoteAddr)
+	// Keep the handler safe if constructed outside NewAuthService.
+	if h.rateLimiter == nil {
+		h.rateLimiter = ratelimit.NewRateLimiter()
+	}
 	if !h.rateLimiter.CheckLogin(ip, in.Email) {
 		httpx.Fail(w, apperr.TooManyRequests.With("too many login attempts, please try again later"))
 		return
@@ -114,13 +124,13 @@ func (h *Handler) Refresh(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	newToken, e := h.Service.RefreshToken(r.Context(), in.RefreshToken)
+	newAccessToken, newRefreshToken, e := h.Service.RefreshToken(r.Context(), in.RefreshToken)
 	if e != nil {
 		httpx.Fail(w, apperr.Unauthorized.With("invalid refresh token"))
 		return
 	}
 
-	httpx.OK(w, map[string]any{"access_token": newToken})
+	httpx.OK(w, map[string]any{"access_token": newAccessToken, "refresh_token": newRefreshToken})
 }
 
 func (h *Handler) Logout(w http.ResponseWriter, r *http.Request) {
@@ -238,4 +248,15 @@ func (h *Handler) Get(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	httpx.OK(w, map[string]any{"id": user.ID, "first_name": user.FirstName, "last_name": user.LastName, "email": user.Email, "is_active": user.IsActive})
+}
+
+// clientIP extracts the host component from RemoteAddr. Forwarded headers are
+// intentionally not trusted here; a trusted-proxy policy must be configured
+// explicitly before those headers can safely be used.
+func clientIP(remoteAddr string) string {
+	host, _, err := net.SplitHostPort(remoteAddr)
+	if err == nil {
+		return host
+	}
+	return strings.TrimSpace(remoteAddr)
 }
