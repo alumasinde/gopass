@@ -89,77 +89,61 @@ export default function TenantList({ tenants, onAction, onRowClick }: TenantList
 
   if (tenants.length === 0) {
     return (
-      <div style={{ backgroundColor: 'white', padding: '2rem', borderRadius: '8px', textAlign: 'center', color: '#6b7280' }}>
+      <div className="extracted-style-113f025f29">
         <p>No tenants found. Create your first tenant to get started.</p>
       </div>
     );
   }
 
   return (
-    <div style={{ backgroundColor: 'white', borderRadius: '8px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)', overflow: 'hidden' }}>
-      <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+    <div className="extracted-style-40736e307b">
+      <table className="extracted-style-a55f31db10">
         <thead>
-          <tr style={{ backgroundColor: '#f9fafb', borderBottom: '1px solid #e5e7eb' }}>
-            <th style={{ padding: '0.75rem 1rem', textAlign: 'left', fontSize: '0.75rem', fontWeight: '600', textTransform: 'uppercase', color: '#6b7280' }}>ID</th>
-            <th style={{ padding: '0.75rem 1rem', textAlign: 'left', fontSize: '0.75rem', fontWeight: '600', textTransform: 'uppercase', color: '#6b7280' }}>Name</th>
-            <th style={{ padding: '0.75rem 1rem', textAlign: 'left', fontSize: '0.75rem', fontWeight: '600', textTransform: 'uppercase', color: '#6b7280' }}>Slug</th>
-            <th style={{ padding: '0.75rem 1rem', textAlign: 'left', fontSize: '0.75rem', fontWeight: '600', textTransform: 'uppercase', color: '#6b7280' }}>Lifecycle</th>
-            <th style={{ padding: '0.75rem 1rem', textAlign: 'left', fontSize: '0.75rem', fontWeight: '600', textTransform: 'uppercase', color: '#6b7280' }}>Provisioning</th>
-            <th style={{ padding: '0.75rem 1rem', textAlign: 'left', fontSize: '0.75rem', fontWeight: '600', textTransform: 'uppercase', color: '#6b7280' }}>Database</th>
-            <th style={{ padding: '0.75rem 1rem', textAlign: 'left', fontSize: '0.75rem', fontWeight: '600', textTransform: 'uppercase', color: '#6b7280' }}>Created</th>
-            <th style={{ padding: '0.75rem 1rem', textAlign: 'right', fontSize: '0.75rem', fontWeight: '600', textTransform: 'uppercase', color: '#6b7280' }}>Actions</th>
+          <tr className="extracted-style-e5046e59fb">
+            <th className="extracted-style-ea59bf4a41">ID</th>
+            <th className="extracted-style-ea59bf4a41">Name</th>
+            <th className="extracted-style-ea59bf4a41">Slug</th>
+            <th className="extracted-style-ea59bf4a41">Lifecycle</th>
+            <th className="extracted-style-ea59bf4a41">Provisioning</th>
+            <th className="extracted-style-ea59bf4a41">Database</th>
+            <th className="extracted-style-ea59bf4a41">Created</th>
+            <th className="extracted-style-105135d318">Actions</th>
           </tr>
         </thead>
         <tbody>
           {tenants.map((tenant) => (
             <tr 
               key={tenant.id} 
-              style={{ borderBottom: '1px solid #e5e7eb', cursor: onRowClick ? 'pointer' : 'default' }}
+              className={onRowClick ? "legacy-tenant-row legacy-tenant-row-clickable" : "legacy-tenant-row"}
               onClick={() => onRowClick?.(tenant.id)}
             >
-              <td style={{ padding: '0.75rem 1rem', fontSize: '0.875rem', color: '#374151' }}>{tenant.id}</td>
-              <td style={{ padding: '0.75rem 1rem', fontSize: '0.875rem', color: '#374151', fontWeight: '500' }}>{tenant.name}</td>
-              <td style={{ padding: '0.75rem 1rem', fontSize: '0.875rem', color: '#6b7280' }}>{tenant.slug}</td>
-              <td style={{ padding: '0.75rem 1rem' }}>
-                <span style={{
-                  display: 'inline-block',
-                  padding: '0.25rem 0.5rem',
-                  borderRadius: '9999px',
-                  fontSize: '0.75rem',
-                  fontWeight: '500',
-                  backgroundColor: `${getStatusColor(tenant.lifecycle_status)}20`,
-                  color: getStatusColor(tenant.lifecycle_status),
-                }}>
+              <td className="extracted-style-bed1b6355f">{tenant.id}</td>
+              <td className="extracted-style-29797852fe">{tenant.name}</td>
+              <td className="extracted-style-c613d744ac">{tenant.slug}</td>
+              <td className="extracted-style-6aa1ccdbf9">
+                <span className={`legacy-status-pill legacy-status-${tenant.lifecycle_status.toLowerCase()}`}>
                   {tenant.lifecycle_status}
                 </span>
               </td>
-              <td style={{ padding: '0.75rem 1rem' }}>
-                <span style={{
-                  display: 'inline-block',
-                  padding: '0.25rem 0.5rem',
-                  borderRadius: '9999px',
-                  fontSize: '0.75rem',
-                  fontWeight: '500',
-                  backgroundColor: `${getProvisioningColor(tenant.provisioning_status)}20`,
-                  color: getProvisioningColor(tenant.provisioning_status),
-                }}>
+              <td className="extracted-style-6aa1ccdbf9">
+                <span className={`legacy-status-pill legacy-provisioning-${tenant.provisioning_status.toLowerCase()}`}>
                   {tenant.provisioning_status}
                 </span>
                 {tenant.provisioning_error && (
-                  <div style={{ fontSize: '0.75rem', color: '#ef4444', marginTop: '0.25rem' }}>{tenant.provisioning_error}</div>
+                  <div className="extracted-style-ece7c40dc9">{tenant.provisioning_error}</div>
                 )}
               </td>
-              <td style={{ padding: '0.75rem 1rem', fontSize: '0.875rem', color: '#6b7280' }}>{tenant.database_mode}</td>
-              <td style={{ padding: '0.75rem 1rem', fontSize: '0.875rem', color: '#6b7280' }}>
+              <td className="extracted-style-c613d744ac">{tenant.database_mode}</td>
+              <td className="extracted-style-c613d744ac">
                 {formatLocalDate(tenant.created_at)}
               </td>
-              <td style={{ padding: '0.75rem 1rem', textAlign: 'right' }}>
-                <div style={{ display: 'flex', gap: '0.5rem', justifyContent: 'flex-end', flexWrap: 'wrap' }}>
+              <td className="extracted-style-b15f608197">
+                <div className="extracted-style-97eaa8db81">
                   {onRowClick && (
                     <button
                       type="button"
                       onClick={(event) => { event.stopPropagation(); onRowClick(tenant.id); }}
-                      style={{ padding: '0.25rem 0.5rem', backgroundColor: '#eff6ff', color: '#1d4ed8', border: '1px solid #bfdbfe', borderRadius: '4px', fontSize: '0.75rem', cursor: 'pointer' }}
+                      className="extracted-style-585a5a0a6f"
                     >
                       View details
                     </button>
@@ -168,15 +152,7 @@ export default function TenantList({ tenants, onAction, onRowClick }: TenantList
                     <button
                       onClick={(event) => { event.stopPropagation(); handleSuspend(tenant.id); }}
                       disabled={!!actionLoading[tenant.id]}
-                      style={{
-                        padding: '0.25rem 0.5rem',
-                        backgroundColor: '#fef3c7',
-                        color: '#d97706',
-                        border: 'none',
-                        borderRadius: '4px',
-                        fontSize: '0.75rem',
-                        cursor: actionLoading[tenant.id] ? 'not-allowed' : 'pointer',
-                      }}
+                      className="legacy-tenant-action legacy-tenant-action-warning"
                     >
                       {actionLoading[tenant.id] === 'suspend' ? '...' : 'Suspend'}
                     </button>
@@ -185,15 +161,7 @@ export default function TenantList({ tenants, onAction, onRowClick }: TenantList
                     <button
                       onClick={(event) => { event.stopPropagation(); handleResume(tenant.id); }}
                       disabled={!!actionLoading[tenant.id]}
-                      style={{
-                        padding: '0.25rem 0.5rem',
-                        backgroundColor: '#d1fae5',
-                        color: '#059669',
-                        border: 'none',
-                        borderRadius: '4px',
-                        fontSize: '0.75rem',
-                        cursor: actionLoading[tenant.id] ? 'not-allowed' : 'pointer',
-                      }}
+                      className="legacy-tenant-action legacy-tenant-action-success"
                     >
                       {actionLoading[tenant.id] === 'resume' ? '...' : 'Resume'}
                     </button>
@@ -202,15 +170,7 @@ export default function TenantList({ tenants, onAction, onRowClick }: TenantList
                     <button
                       onClick={(event) => { event.stopPropagation(); handleDeprovision(tenant.id); }}
                       disabled={!!actionLoading[tenant.id]}
-                      style={{
-                        padding: '0.25rem 0.5rem',
-                        backgroundColor: '#fee2e2',
-                        color: '#dc2626',
-                        border: 'none',
-                        borderRadius: '4px',
-                        fontSize: '0.75rem',
-                        cursor: actionLoading[tenant.id] ? 'not-allowed' : 'pointer',
-                      }}
+                      className="legacy-tenant-action legacy-tenant-action-danger"
                     >
                       {actionLoading[tenant.id] === 'deprovision' ? '...' : 'Deprovision'}
                     </button>
@@ -219,15 +179,7 @@ export default function TenantList({ tenants, onAction, onRowClick }: TenantList
                     <button
                       onClick={(event) => { event.stopPropagation(); handleRetryProvisioning(tenant.id); }}
                       disabled={!!actionLoading[tenant.id]}
-                      style={{
-                        padding: '0.25rem 0.5rem',
-                        backgroundColor: '#dbeafe',
-                        color: '#2563eb',
-                        border: 'none',
-                        borderRadius: '4px',
-                        fontSize: '0.75rem',
-                        cursor: actionLoading[tenant.id] ? 'not-allowed' : 'pointer',
-                      }}
+                      className="legacy-tenant-action legacy-tenant-action-info"
                     >
                       {actionLoading[tenant.id] === 'retry' ? '...' : 'Retry'}
                     </button>

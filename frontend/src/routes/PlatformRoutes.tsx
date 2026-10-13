@@ -1,18 +1,18 @@
 import { Navigate } from 'react-router-dom';
 import { usePlatformAuth } from '../contexts/PlatformAuthContext';
-import PlatformLogin from '../pages/PlatformLogin';
-import PlatformDashboard from '../pages/PlatformDashboard';
+import PlatformLogin from '../modules/auth/PlatformLogin';
+import PlatformDashboard from '../modules/dashboard/PlatformDashboard';
 import PlatformLayout from '../components/PlatformLayout';
-import Tenants from '../pages/Tenants';
-import TenantDetail from '../pages/TenantDetail';
-import Admins from '../pages/Admins';
-import Migrations from '../pages/Migrations';
+import Tenants from '../modules/admin/Tenants';
+import TenantDetail from '../modules/admin/TenantDetail';
+import Admins from '../modules/admin/Admins';
+import Migrations from '../modules/admin/Migrations';
 
 export function ProtectedRoute({ children }: { children: React.ReactNode }) {
   const { isAuthenticated, isLoading } = usePlatformAuth();
 
   if (isLoading) {
-    return <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', minHeight: '100vh' }}>Loading...</div>;
+    return <div className="extracted-style-9eb003477b">Loading...</div>;
   }
 
   if (!isAuthenticated) {
@@ -26,7 +26,7 @@ export function PublicRoute({ children }: { children: React.ReactNode }) {
   const { isAuthenticated, isLoading } = usePlatformAuth();
 
   if (isLoading) {
-    return <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', minHeight: '100vh' }}>Loading...</div>;
+    return <div className="extracted-style-9eb003477b">Loading...</div>;
   }
 
   if (isAuthenticated) {

@@ -37,6 +37,7 @@ export interface Visitor {
 }
 export interface Gatepass {
   id: number;
+  organization_id?: number;
   visitor_id: number;
   gate_id: number;
   pass_type_id: number;
@@ -44,6 +45,10 @@ export interface Gatepass {
   valid_from: string;
   valid_until: string;
 }
+export interface TenantGate { id: number; site_id: number; name: string; code: string; is_active: boolean }
+export interface PassType { id: number; name: string; code: string; requires_approval: boolean; validity_minutes: number; is_active: boolean }
+export interface VisitorInput { first_name: string; last_name: string; phone: string; email: string }
+export interface CreateGatepassInput { visitor_id: number; gate_id: number; pass_type_id: number; valid_from: string; valid_until: string }
 export interface ApprovalRequest {
   id: number;
   gatepass_id: number;
@@ -142,6 +147,25 @@ export const tenantDashboardApi = {
   approvals: () => getArrayData<ApprovalRequest>('/api/v1/approvals/'),
   checkIns: () => getArrayData<CheckIn>('/api/v1/check-ins/'),
   checkOuts: () => getArrayData<CheckOut>('/api/v1/check-outs/'),
+};
+
+export const tenantVisitorsApi = {
+  list: () => getArrayData<Visitor>('/api/v1/visitors/'),
+  get: (id: number) => getData<Visitor>(`/api/v1/visitors/${id}`),
+  create: async (input: VisitorInput) => { const response = await tenantApi.post<Envelope<Visitor>>('/api/v1/visitors/', input); return response.data.data; },
+  update: async (id: number, input: VisitorInput) => { const response = await tenantApi.put<Envelope<{ id: number }>>(`/api/v1/visitors/${id}`, input); return response.data.data; },
+  blacklist: async (id: number) => { const response = await tenantApi.post<Envelope<{ id: number; is_blacklisted: boolean }>>(`/api/v1/visitors/${id}/blacklist`); return response.data.data; },
+  unblacklist: async (id: number) => { const response = await tenantApi.post<Envelope<{ id: number; is_blacklisted: boolean }>>(`/api/v1/visitors/${id}/unblacklist`); return response.data.data; },
+};
+
+export const tenantVisitsApi = {
+  list: () => getArrayData<Gatepass>('/api/v1/gatepasses/'),
+  gates: () => getArrayData<TenantGate>('/api/v1/gates/'),
+  passTypes: () => getArrayData<PassType>('/api/v1/pass-types/'),
+  create: async (input: CreateGatepassInput) => { const response = await tenantApi.post<Envelope<Gatepass>>('/api/v1/gatepasses/', input); return response.data.data; },
+  submit: async (id: number) => { const response = await tenantApi.post<Envelope<{ id: number; status: string }>>(`/api/v1/gatepasses/${id}/submit`); return response.data.data; },
+  cancel: async (id: number) => { const response = await tenantApi.post<Envelope<{ id: number; status: string }>>(`/api/v1/gatepasses/${id}/cancel`); return response.data.data; },
+  revoke: async (id: number) => { const response = await tenantApi.post<Envelope<{ id: number; status: string }>>(`/api/v1/gatepasses/${id}/revoke`); return response.data.data; },
 };
 
 export default tenantApi;

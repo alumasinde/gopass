@@ -42,19 +42,19 @@ export default function CreateTenantModal({ onClose, onSuccess }: CreateTenantMo
   };
 
   return (
-    <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(0,0,0,0.5)', display: 'flex', justifyContent: 'center', alignItems: 'center', zIndex: 1000 }}>
-      <div style={{ backgroundColor: 'white', borderRadius: '8px', width: '100%', maxWidth: '500px', maxHeight: '90vh', overflowY: 'auto', padding: '2rem' }}>
-        <h2 style={{ fontSize: '1.25rem', fontWeight: 'bold', marginBottom: '1.5rem' }}>Create New Tenant</h2>
+    <div className="extracted-style-d9bbc1b905">
+      <div className="extracted-style-70153fe236">
+        <h2 className="extracted-style-0662675913">Create New Tenant</h2>
 
         {error && (
-          <div style={{ backgroundColor: '#fee', color: '#c33', padding: '0.75rem', borderRadius: '4px', marginBottom: '1rem', fontSize: '0.875rem' }}>
+          <div className="extracted-style-bfdca8fd79">
             {error}
           </div>
         )}
 
         <form onSubmit={handleSubmit}>
-          <div style={{ marginBottom: '1rem' }}>
-            <label style={{ display: 'block', marginBottom: '0.5rem', fontSize: '0.875rem', fontWeight: '500' }}>
+          <div className="extracted-style-363cdaa22c">
+            <label className="extracted-style-fa7d82998f">
               Organization Name *
             </label>
             <input
@@ -62,13 +62,13 @@ export default function CreateTenantModal({ onClose, onSuccess }: CreateTenantMo
               value={formData.name}
               onChange={handleChange('name')}
               required
-              style={{ width: '100%', padding: '0.5rem', border: '1px solid #ddd', borderRadius: '4px', fontSize: '1rem' }}
+              className="extracted-style-ddcfa2b1f1"
               placeholder="Acme Corporation"
             />
           </div>
 
-          <div style={{ marginBottom: '1rem' }}>
-            <label style={{ display: 'block', marginBottom: '0.5rem', fontSize: '0.875rem', fontWeight: '500' }}>
+          <div className="extracted-style-363cdaa22c">
+            <label className="extracted-style-fa7d82998f">
               Slug *
             </label>
             <input
@@ -77,34 +77,34 @@ export default function CreateTenantModal({ onClose, onSuccess }: CreateTenantMo
               onChange={handleChange('slug')}
               required
               pattern="^[a-z0-9]+(?:-[a-z0-9]+)*$"
-              style={{ width: '100%', padding: '0.5rem', border: '1px solid #ddd', borderRadius: '4px', fontSize: '1rem' }}
+              className="extracted-style-ddcfa2b1f1"
               placeholder="acme-corp"
             />
-            <p style={{ fontSize: '0.75rem', color: '#6b7280', marginTop: '0.25rem' }}>Lowercase letters, numbers, and hyphens only</p>
+            <p className="extracted-style-6dfacc9407">Lowercase letters, numbers, and hyphens only</p>
           </div>
 
-          <div style={{ marginBottom: '1rem' }}>
-            <label style={{ display: 'block', marginBottom: '0.5rem', fontSize: '0.875rem', fontWeight: '500' }}>
+          <div className="extracted-style-363cdaa22c">
+            <label className="extracted-style-fa7d82998f">
               Database Mode
             </label>
             <select
               value={formData.database_mode}
               onChange={handleChange('database_mode')}
-              style={{ width: '100%', padding: '0.5rem', border: '1px solid #ddd', borderRadius: '4px', fontSize: '1rem' }}
+              className="extracted-style-ddcfa2b1f1"
             >
               <option value="SHARED">Shared</option>
               <option value="DEDICATED">Dedicated</option>
             </select>
             {formData.database_mode === 'DEDICATED' && (
-              <p style={{ fontSize: '0.75rem', color: '#6b7280', marginTop: '0.4rem' }}>After creating the tenant, open its details and configure a dedicated MySQL database. The tenant stays inactive until provisioning succeeds.</p>
+              <p className="extracted-style-decf3c58f4">After creating the tenant, open its details and configure a dedicated MySQL database. The tenant stays inactive until provisioning succeeds.</p>
             )}
           </div>
 
-          <div style={{ borderTop: '1px solid #e5e7eb', paddingTop: '1rem', marginTop: '1rem', marginBottom: '1rem' }}>
-            <h3 style={{ fontSize: '1rem', fontWeight: '600', marginBottom: '1rem' }}>Admin Account</h3>
+          <div className="extracted-style-2ebf89bc60">
+            <h3 className="extracted-style-2135ac1de0">Admin Account</h3>
 
-            <div style={{ marginBottom: '1rem' }}>
-              <label style={{ display: 'block', marginBottom: '0.5rem', fontSize: '0.875rem', fontWeight: '500' }}>
+            <div className="extracted-style-363cdaa22c">
+              <label className="extracted-style-fa7d82998f">
                 First Name *
               </label>
               <input
@@ -112,13 +112,13 @@ export default function CreateTenantModal({ onClose, onSuccess }: CreateTenantMo
                 value={formData.admin_first_name}
                 onChange={handleChange('admin_first_name')}
                 required
-                style={{ width: '100%', padding: '0.5rem', border: '1px solid #ddd', borderRadius: '4px', fontSize: '1rem' }}
+                className="extracted-style-ddcfa2b1f1"
                 placeholder="John"
               />
             </div>
 
-            <div style={{ marginBottom: '1rem' }}>
-              <label style={{ display: 'block', marginBottom: '0.5rem', fontSize: '0.875rem', fontWeight: '500' }}>
+            <div className="extracted-style-363cdaa22c">
+              <label className="extracted-style-fa7d82998f">
                 Last Name *
               </label>
               <input
@@ -126,13 +126,13 @@ export default function CreateTenantModal({ onClose, onSuccess }: CreateTenantMo
                 value={formData.admin_last_name}
                 onChange={handleChange('admin_last_name')}
                 required
-                style={{ width: '100%', padding: '0.5rem', border: '1px solid #ddd', borderRadius: '4px', fontSize: '1rem' }}
+                className="extracted-style-ddcfa2b1f1"
                 placeholder="Doe"
               />
             </div>
 
-            <div style={{ marginBottom: '1rem' }}>
-              <label style={{ display: 'block', marginBottom: '0.5rem', fontSize: '0.875rem', fontWeight: '500' }}>
+            <div className="extracted-style-363cdaa22c">
+              <label className="extracted-style-fa7d82998f">
                 Email *
               </label>
               <input
@@ -140,13 +140,13 @@ export default function CreateTenantModal({ onClose, onSuccess }: CreateTenantMo
                 value={formData.admin_email}
                 onChange={handleChange('admin_email')}
                 required
-                style={{ width: '100%', padding: '0.5rem', border: '1px solid #ddd', borderRadius: '4px', fontSize: '1rem' }}
+                className="extracted-style-ddcfa2b1f1"
                 placeholder="admin@acme.com"
               />
             </div>
 
-            <div style={{ marginBottom: '1.5rem' }}>
-              <label style={{ display: 'block', marginBottom: '0.5rem', fontSize: '0.875rem', fontWeight: '500' }}>
+            <div className="extracted-style-561f378bf0">
+              <label className="extracted-style-fa7d82998f">
                 Password *
               </label>
               <input
@@ -155,44 +155,26 @@ export default function CreateTenantModal({ onClose, onSuccess }: CreateTenantMo
                 onChange={handleChange('admin_password')}
                 required
                 minLength={14}
-                style={{ width: '100%', padding: '0.5rem', border: '1px solid #ddd', borderRadius: '4px', fontSize: '1rem' }}
+                className="extracted-style-ddcfa2b1f1"
                 placeholder="••••••••••••••"
               />
-              <p style={{ fontSize: '0.75rem', color: '#6b7280', marginTop: '0.25rem' }}>Minimum 14 characters</p>
+              <p className="extracted-style-6dfacc9407">Minimum 14 characters</p>
             </div>
           </div>
 
-          <div style={{ display: 'flex', gap: '1rem', justifyContent: 'flex-end' }}>
+          <div className="extracted-style-64002f3605">
             <button
               type="button"
               onClick={onClose}
               disabled={isLoading}
-              style={{
-                padding: '0.5rem 1rem',
-                backgroundColor: 'white',
-                color: '#374151',
-                border: '1px solid #d1d5db',
-                borderRadius: '4px',
-                fontSize: '0.875rem',
-                fontWeight: '500',
-                cursor: isLoading ? 'not-allowed' : 'pointer',
-              }}
+              className="legacy-action-button legacy-action-button-cancel"
             >
               Cancel
             </button>
             <button
               type="submit"
               disabled={isLoading}
-              style={{
-                padding: '0.5rem 1rem',
-                backgroundColor: isLoading ? '#ccc' : '#2563eb',
-                color: 'white',
-                border: 'none',
-                borderRadius: '4px',
-                fontSize: '0.875rem',
-                fontWeight: '500',
-                cursor: isLoading ? 'not-allowed' : 'pointer',
-              }}
+              className="legacy-action-button legacy-action-button-submit"
             >
               {isLoading ? 'Creating...' : 'Create Tenant'}
             </button>

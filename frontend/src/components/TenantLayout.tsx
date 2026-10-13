@@ -26,8 +26,8 @@ export default function TenantLayout({ children }: { children: ReactNode }) {
         <div className="tenant-nav-label">WORKSPACE</div>
         <nav className="tenant-nav" aria-label="Tenant navigation">
           <NavLink to="/tenant/dashboard" className={({ isActive }) => `tenant-nav-item${isActive ? ' active' : ''}`}><span>▦</span> Overview</NavLink>
-          {canAny('visitors.view', 'visitors.register') && <button className="tenant-nav-item tenant-nav-disabled" type="button" title="Visitor pages are not included in this UI phase" disabled><span>♙</span> Visitors <small>Next</small></button>}
-          {canAny('gatepasses.view', 'gatepasses.create') && <button className="tenant-nav-item tenant-nav-disabled" type="button" title="Gatepass pages are not included in this UI phase" disabled><span>▤</span> Gatepasses <small>Next</small></button>}
+          {canAny('visitors.view') && <NavLink to="/tenant/visitors" className={({ isActive }) => `tenant-nav-item${isActive ? ' active' : ''}`}><span>♙</span> Visitors</NavLink>}
+          {canAny('gatepasses.view') && <NavLink to="/tenant/visits" className={({ isActive }) => `tenant-nav-item${isActive ? ' active' : ''}`}><span>◷</span> Visits</NavLink>}
           {canAny('approvals.view', 'approvals.approve') && <button className="tenant-nav-item tenant-nav-disabled" type="button" title="Approval pages are not included in this UI phase" disabled><span>✓</span> Approvals <small>Next</small></button>}
           {canAny('checkins.view', 'checkins.perform', 'checkouts.view', 'checkouts.perform') && <button className="tenant-nav-item tenant-nav-disabled" type="button" title="Security desk pages are not included in this UI phase" disabled><span>⌖</span> Security desk <small>Next</small></button>}
           {canAny('users.view', 'roles.view', 'sites.view', 'gates.view') && <div className="tenant-nav-label">ADMINISTRATION</div>}
