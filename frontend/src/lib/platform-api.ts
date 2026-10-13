@@ -117,3 +117,70 @@ export const platformOrganizations = {
     await api.post(`/api/v1/platform/organizations/${id}/database-config`, { dsn });
   },
 };
+
+
+export interface MigrationEntry {
+  version: number;
+  name: string;
+  applied: boolean;
+  applied_at?: string;
+  checksum_status: 'NOT_APPLIED' | 'UNVERIFIED' | 'MATCH' | 'MISMATCH' | 'NAME_MISMATCH' | 'UNKNOWN_MIGRATION';
+  drift: boolean;
+}
+
+export interface MigrationReport {
+  history_exists: boolean;
+  has_checksums: boolean;
+  migrations: MigrationEntry[];
+  pending_count: number;
+  applied_count: number;
+  drift_count: number;
+}
+
+export interface MigrationStatusResponse {
+  target_database: string;
+  execution_enabled: boolean;
+  report: MigrationReport;
+  active_run?: {
+    run_id: string;
+    status: 'QUEUED' | 'RUNNING';
+    target_database: string;
+    expected_versions: number[];
+    updated_at: string;
+  };
+  latest_run?: MigrationRun;
+}
+
+export interface MigrationRun {
+  run_id: string;
+  requested_by: number;
+  target_database: string;
+  status: 'QUEUED' | 'RUNNING' | 'SUCCEEDED' | 'FAILED';
+  expected_versions: number[];
+  applied_versions: number[];
+  error_message?: string;
+  created_at: string;
+  updated_at: string;
+  started_at?: string;
+  finished_at?: string;
+}
+
+export const platformMigrations = {
+  status: async (): Promise<MigrationStatusResponse> => {
+    const response = await api.get<Envelope<MigrationStatusResponse>>('/api/v1/platform/migrations');
+    return response.data.data;
+  },
+
+  run: async (expectedVersions: number[], confirmation: string): Promise<{ run_id: string; status: string; expected_versions: number[]; message: string }> => {
+    const response = await api.post<Envelope<{ run_id: string; status: string; expected_versions: number[]; message: string }>>(
+      '/api/v1/platform/migrations/run',
+      { expected_versions: expectedVersions, confirmation },
+    );
+    return response.data.data;
+  },
+
+  getRun: async (runID: string): Promise<MigrationRun> => {
+    const response = await api.get<Envelope<MigrationRun>>(`/api/v1/platform/migrations/runs/${encodeURIComponent(runID)}`);
+    return response.data.data;
+  },
+};

@@ -100,9 +100,13 @@ func (r *Router) dedicated(ctx context.Context, orgID int64, ciphertext string) 
 	if err != nil || strings.TrimSpace(cfg.DBName) == "" {
 		return nil, fmt.Errorf("%w: invalid tenant DSN", ErrTenantUnavailable)
 	}
-	cfg.MultiStatements = true
 	cfg.ParseTime = true
 	cfg.Loc = time.UTC
+	cfg.MultiStatements = false
+	if cfg.Params == nil {
+		cfg.Params = map[string]string{}
+	}
+	cfg.Params["time_zone"] = "'+00:00'"
 	db, err := sql.Open("mysql", cfg.FormatDSN())
 	if err != nil {
 		return nil, fmt.Errorf("%w: open tenant DB: %v", ErrTenantUnavailable, err)
@@ -160,9 +164,13 @@ func ValidateDSN(ctx context.Context, dsn string) error {
 	if cfg.DBName == "" {
 		return errors.New("DSN must include a database name")
 	}
-	cfg.MultiStatements = true
 	cfg.ParseTime = true
 	cfg.Loc = time.UTC
+	cfg.MultiStatements = false
+	if cfg.Params == nil {
+		cfg.Params = map[string]string{}
+	}
+	cfg.Params["time_zone"] = "'+00:00'"
 	db, err := sql.Open("mysql", cfg.FormatDSN())
 	if err != nil {
 		return err
@@ -260,9 +268,13 @@ func (r *Router) ProvisionDedicated(ctx context.Context, orgID int64) error {
 		return err
 	}
 	otherRows.Close()
-	cfg.MultiStatements = true
 	cfg.ParseTime = true
 	cfg.Loc = time.UTC
+	cfg.MultiStatements = false
+	if cfg.Params == nil {
+		cfg.Params = map[string]string{}
+	}
+	cfg.Params["time_zone"] = "'+00:00'"
 	db, err := sql.Open("mysql", cfg.FormatDSN())
 	if err != nil {
 		return err
@@ -621,9 +633,13 @@ func (r *Router) RevokeSessions(ctx context.Context, orgID int64) error {
 	if err != nil {
 		return err
 	}
-	cfg.MultiStatements = true
 	cfg.ParseTime = true
 	cfg.Loc = time.UTC
+	cfg.MultiStatements = false
+	if cfg.Params == nil {
+		cfg.Params = map[string]string{}
+	}
+	cfg.Params["time_zone"] = "'+00:00'"
 	db, err := sql.Open("mysql", cfg.FormatDSN())
 	if err != nil {
 		return err

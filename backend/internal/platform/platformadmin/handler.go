@@ -11,11 +11,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"net/mail"
 	"os"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 
@@ -25,6 +27,7 @@ import (
 	"github.com/alumasinde/gopass/internal/platform/auth"
 	"github.com/alumasinde/gopass/internal/platform/httpx"
 	"github.com/alumasinde/gopass/internal/platform/ratelimit"
+	"github.com/alumasinde/gopass/migrations"
 	"github.com/go-chi/chi/v5"
 	"github.com/go-sql-driver/mysql"
 )
@@ -81,6 +84,9 @@ func (h *Handler) RegisterRoutes(r chi.Router) {
 		p.Post("/platform/organizations/{id}/database-config", h.SetDatabaseConfig)
 		p.Post("/platform/organizations/{id}/deprovision", h.Deprovision)
 		p.Post("/platform/organizations/{id}/provision/retry", h.RetryProvisioning)
+		p.Get("/platform/migrations", h.MigrationStatus)
+		p.Post("/platform/migrations/run", h.RunMigrations)
+		p.Get("/platform/migrations/runs/{id}", h.GetMigrationRun)
 	})
 }
 func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
@@ -786,6 +792,412 @@ func (h *Handler) auditTx(ctx context.Context, tx *sql.Tx, actor int64, action, 
 	_, err = tx.ExecContext(ctx, `INSERT INTO platform_audit_logs(actor_platform_user_id,action,resource_type,resource_id,old_values,new_values,created_at) VALUES(?,?,?,?,?,?,UTC_TIMESTAMP())`, actorValue, action, resource, id, oldJSON, newJSON)
 	return err
 }
+
+// MigrationStatus reports the actual embedded migration inventory and database
+// history. It is read-only and requires a valid platform administrator session.
+func (h *Handler) MigrationStatus(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+	defer cancel()
+	report, err := migrations.Status(ctx, h.db)
+	if err != nil {
+		log.Printf("platform migration status failed: %v", err)
+		httpx.Fail(w, apperr.Database)
+		return
+	}
+	var databaseName string
+	if err := h.db.QueryRowContext(ctx, `SELECT DATABASE()`).Scan(&databaseName); err != nil {
+		httpx.Fail(w, apperr.Database)
+		return
+	}
+	response := map[string]any{
+		"target_database":   databaseName,
+		"execution_enabled": migrationUIEnabled(),
+		"report":            report,
+	}
+	var runTableCount int
+	if err := h.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM information_schema.tables WHERE table_schema=DATABASE() AND table_name='platform_migration_runs'`).Scan(&runTableCount); err != nil {
+		httpx.Fail(w, apperr.Database)
+		return
+	}
+	if runTableCount > 0 {
+		var runID, runStatus, targetDB string
+		var versionsJSON []byte
+		var updated time.Time
+		err := h.db.QueryRowContext(ctx, `SELECT run_id,status,target_database,expected_versions,updated_at FROM platform_migration_runs WHERE active_key='ACTIVE' ORDER BY created_at DESC LIMIT 1`).Scan(&runID, &runStatus, &targetDB, &versionsJSON, &updated)
+		if err == nil {
+			var versions []int
+			if json.Unmarshal(versionsJSON, &versions) != nil {
+				httpx.Fail(w, apperr.Database)
+				return
+			}
+			response["active_run"] = map[string]any{"run_id": runID, "status": runStatus, "target_database": targetDB, "expected_versions": versions, "updated_at": updated.UTC()}
+		} else if !errors.Is(err, sql.ErrNoRows) {
+			httpx.Fail(w, apperr.Database)
+			return
+		}
+	}
+	if runTableCount > 0 {
+		var runID, runStatus, targetDB string
+		var requestedBy int64
+		var versionsJSON []byte
+		var appliedJSON, errorMessage sql.NullString
+		var createdAt, updatedAt time.Time
+		var startedAt, finishedAt sql.NullTime
+		err := h.db.QueryRowContext(ctx, `SELECT run_id,requested_by,status,target_database,expected_versions,CAST(applied_versions AS CHAR),error_message,created_at,updated_at,started_at,finished_at FROM platform_migration_runs ORDER BY created_at DESC LIMIT 1`).Scan(&runID, &requestedBy, &runStatus, &targetDB, &versionsJSON, &appliedJSON, &errorMessage, &createdAt, &updatedAt, &startedAt, &finishedAt)
+		if err == nil {
+			var expectedVersions []int
+			appliedVersions := make([]int, 0)
+			if json.Unmarshal(versionsJSON, &expectedVersions) != nil {
+				httpx.Fail(w, apperr.Database)
+				return
+			}
+			if appliedJSON.Valid && json.Unmarshal([]byte(appliedJSON.String), &appliedVersions) != nil {
+				httpx.Fail(w, apperr.Database)
+				return
+			}
+			latest := map[string]any{
+				"run_id": runID, "requested_by": requestedBy, "status": runStatus,
+				"target_database": targetDB, "expected_versions": expectedVersions,
+				"applied_versions": appliedVersions, "created_at": createdAt.UTC(), "updated_at": updatedAt.UTC(),
+			}
+			if errorMessage.Valid && errorMessage.String != "" {
+				latest["error_message"] = errorMessage.String
+			}
+			if startedAt.Valid {
+				latest["started_at"] = startedAt.Time.UTC()
+			}
+			if finishedAt.Valid {
+				latest["finished_at"] = finishedAt.Time.UTC()
+			}
+			response["latest_run"] = latest
+		} else if !errors.Is(err, sql.ErrNoRows) {
+			httpx.Fail(w, apperr.Database)
+			return
+		}
+	}
+	httpx.OK(w, response)
+}
+
+// RunMigrations executes only the migrations embedded in this exact backend
+// build. It is intentionally disabled by default and protected by platform
+// session middleware. The caller must confirm the exact pending version list.
+func (h *Handler) RunMigrations(w http.ResponseWriter, r *http.Request) {
+	if !migrationUIEnabled() {
+		httpx.Error(w, http.StatusForbidden, "migration_ui_disabled", "migration execution through the UI is disabled; enable PLATFORM_MIGRATIONS_UI_ENABLED during an approved maintenance window")
+		return
+	}
+	var in struct {
+		Confirmation     string `json:"confirmation"`
+		ExpectedVersions []int  `json:"expected_versions"`
+	}
+	if httpx.Decode(r, &in) != nil {
+		httpx.Fail(w, apperr.InvalidJSON)
+		return
+	}
+	if in.Confirmation != "APPLY PENDING MIGRATIONS" {
+		httpx.Fail(w, apperr.InvalidRequest.With("confirmation must exactly equal APPLY PENDING MIGRATIONS"))
+		return
+	}
+	claims, ok := auth.From(r.Context())
+	if !ok {
+		httpx.Fail(w, apperr.Unauthorized)
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+	defer cancel()
+	before, err := migrations.Status(ctx, h.db)
+	if err != nil {
+		log.Printf("platform migration preflight failed: %v", err)
+		httpx.Fail(w, apperr.Database)
+		return
+	}
+	if !before.HistoryExists {
+		httpx.Fail(w, apperr.Conflict.With("migration history table is missing; bootstrap or repair this database using the migration CLI before using the UI"))
+		return
+	}
+	if before.AppliedCount == 0 && before.PendingCount > 0 {
+		httpx.Fail(w, apperr.Conflict.With("no applied migration history exists; bootstrap this database using the migration CLI before using the UI"))
+		return
+	}
+	if before.DriftCount > 0 {
+		httpx.Fail(w, apperr.Conflict.With("migration history drift detected; resolve drift before applying pending migrations"))
+		return
+	}
+	pending := make([]int, 0, before.PendingCount)
+	for _, item := range before.Migrations {
+		if !item.Applied {
+			pending = append(pending, item.Version)
+		}
+	}
+	if !sameVersions(pending, in.ExpectedVersions) {
+		httpx.Fail(w, apperr.Conflict.With("pending migrations changed since the page was loaded; refresh migration status and confirm again"))
+		return
+	}
+	if len(pending) == 0 {
+		httpx.OK(w, map[string]any{"message": "No pending migrations.", "applied": []int{}})
+		return
+	}
+	var databaseName string
+	if err := h.db.QueryRowContext(ctx, `SELECT DATABASE()`).Scan(&databaseName); err != nil {
+		httpx.Fail(w, apperr.Database)
+		return
+	}
+	// The job table is included in migration 0010, but it must also be available
+	// to track the first UI-triggered run that applies 0010 on an older database.
+	if err := ensureMigrationRunsTable(ctx, h.db); err != nil {
+		log.Printf("ensure migration run tracking table failed: %v", err)
+		httpx.Fail(w, apperr.Database)
+		return
+	}
+	expectedJSON, err := json.Marshal(pending)
+	if err != nil {
+		httpx.Fail(w, apperr.Internal)
+		return
+	}
+	runID, err := auth.NewSessionID()
+	if err != nil {
+		httpx.Fail(w, apperr.Internal)
+		return
+	}
+
+	tx, err := h.db.BeginTx(ctx, nil)
+	if err != nil {
+		httpx.Fail(w, apperr.Database)
+		return
+	}
+	defer tx.Rollback()
+
+	// Recover a run left active by a process crash only after the maximum
+	// migration execution window plus a safety margin has elapsed.
+	var activeID, activeStatus string
+	var activeUpdated time.Time
+	err = tx.QueryRowContext(ctx, `SELECT run_id,status,updated_at FROM platform_migration_runs WHERE active_key='ACTIVE' LIMIT 1 FOR UPDATE`).Scan(&activeID, &activeStatus, &activeUpdated)
+	if err == nil {
+		if time.Since(activeUpdated.UTC()) < 15*time.Minute {
+			httpx.Fail(w, apperr.Conflict.With("another migration run is already queued or running"))
+			return
+		}
+		oldState := map[string]any{"run_id": activeID, "status": activeStatus}
+		newState := map[string]any{"run_id": activeID, "status": "FAILED", "reason": "stale run recovered after process interruption"}
+		if _, err := tx.ExecContext(ctx, `UPDATE platform_migration_runs SET status='FAILED',active_key=NULL,error_message=?,finished_at=UTC_TIMESTAMP(),updated_at=UTC_TIMESTAMP() WHERE run_id=? AND active_key='ACTIVE'`, "stale run recovered after process interruption", activeID); err != nil {
+			httpx.Fail(w, apperr.Database)
+			return
+		}
+		if err := h.auditTx(ctx, tx, claims.UserID, "platform.migrations_stale_run_recovered", "database_migrations", 0, oldState, newState); err != nil {
+			httpx.Fail(w, apperr.Database)
+			return
+		}
+	} else if !errors.Is(err, sql.ErrNoRows) {
+		httpx.Fail(w, apperr.Database)
+		return
+	}
+
+	if _, err := tx.ExecContext(ctx, `INSERT INTO platform_migration_runs(run_id,requested_by,target_database,status,expected_versions,active_key,created_at,updated_at) VALUES(?,?,?,'QUEUED',?,'ACTIVE',UTC_TIMESTAMP(),UTC_TIMESTAMP())`, runID, claims.UserID, databaseName, expectedJSON); err != nil {
+		// The unique active_key is a cross-process guard against simultaneous queue requests.
+		httpx.Fail(w, apperr.Conflict.With("another migration run was queued concurrently; refresh migration status"))
+		return
+	}
+	queued := map[string]any{"run_id": runID, "database": databaseName, "versions": pending, "status": "QUEUED"}
+	if err := h.auditTx(ctx, tx, claims.UserID, "platform.migrations_queued", "database_migrations", 0, nil, queued); err != nil {
+		httpx.Fail(w, apperr.Database)
+		return
+	}
+	if err := tx.Commit(); err != nil {
+		httpx.Fail(w, apperr.Database)
+		return
+	}
+
+	// Run outside the HTTP request so the global HTTP write timeout cannot
+	// truncate a long DDL operation. Progress is persisted for UI polling.
+	go h.executeMigrationRun(runID, claims.UserID, databaseName, pending)
+	httpx.JSON(w, http.StatusAccepted, map[string]any{"data": map[string]any{
+		"run_id": runID, "status": "QUEUED", "expected_versions": pending,
+		"message": "Migration run queued. Poll the run status until it completes.",
+	}})
+}
+
+func ensureMigrationRunsTable(ctx context.Context, db *sql.DB) error {
+	const q = `CREATE TABLE IF NOT EXISTS platform_migration_runs (
+		run_id CHAR(32) NOT NULL PRIMARY KEY,
+		requested_by BIGINT UNSIGNED NOT NULL,
+		target_database VARCHAR(128) NOT NULL,
+		status VARCHAR(20) NOT NULL,
+		expected_versions JSON NOT NULL,
+		applied_versions JSON NULL,
+		error_message TEXT NULL,
+		active_key VARCHAR(20) NULL,
+		started_at DATETIME NULL,
+		finished_at DATETIME NULL,
+		created_at DATETIME NOT NULL,
+		updated_at DATETIME NOT NULL,
+		UNIQUE KEY uq_platform_migration_runs_active_key (active_key),
+		KEY idx_platform_migration_runs_created (created_at),
+		KEY idx_platform_migration_runs_status (status)
+	) ENGINE=InnoDB`
+	_, err := db.ExecContext(ctx, q)
+	return err
+}
+
+func (h *Handler) executeMigrationRun(runID string, actorID int64, databaseName string, expected []int) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	defer cancel()
+
+	startTx, err := h.db.BeginTx(ctx, nil)
+	if err != nil {
+		log.Printf("migration run %s could not begin: %v", runID, err)
+		return
+	}
+	startState := map[string]any{"run_id": runID, "status": "QUEUED"}
+	runningState := map[string]any{"run_id": runID, "status": "RUNNING", "started_at": time.Now().UTC()}
+	if _, err = startTx.ExecContext(ctx, `UPDATE platform_migration_runs SET status='RUNNING',started_at=UTC_TIMESTAMP(),updated_at=UTC_TIMESTAMP() WHERE run_id=? AND status='QUEUED'`, runID); err == nil {
+		err = h.auditTx(ctx, startTx, actorID, "platform.migrations_started", "database_migrations", 0, startState, runningState)
+	}
+	if err == nil {
+		err = startTx.Commit()
+	} else {
+		_ = startTx.Rollback()
+	}
+	if err != nil {
+		log.Printf("migration run %s could not enter RUNNING: %v", runID, err)
+		return
+	}
+
+	runErr := migrations.ApplyEmbedded(ctx, h.db)
+	finishCtx, finishCancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer finishCancel()
+	report, statusErr := migrations.Status(finishCtx, h.db)
+	if statusErr != nil {
+		log.Printf("migration run %s status refresh failed: %v", runID, statusErr)
+	}
+	appliedVersions := make([]int, 0)
+	if report.Migrations != nil {
+		for _, item := range report.Migrations {
+			if item.Applied {
+				for _, expectedVersion := range expected {
+					if item.Version == expectedVersion {
+						appliedVersions = append(appliedVersions, item.Version)
+						break
+					}
+				}
+			}
+		}
+	}
+	appliedJSON, _ := json.Marshal(appliedVersions)
+	finalStatus := "SUCCEEDED"
+	action := "platform.migrations_succeeded"
+	message := ""
+	if runErr != nil {
+		finalStatus = "FAILED"
+		action = "platform.migrations_failed"
+		message = runErr.Error()
+		if len(message) > 4000 {
+			message = message[:4000]
+		}
+	}
+	if statusErr != nil && runErr == nil {
+		finalStatus = "FAILED"
+		action = "platform.migrations_failed"
+		message = "migration command returned success but final status could not be verified"
+	}
+	finishTx, txErr := h.db.BeginTx(finishCtx, nil)
+	if txErr != nil {
+		log.Printf("migration run %s could not record final state: %v", runID, txErr)
+		return
+	}
+	defer finishTx.Rollback()
+	oldState := map[string]any{"run_id": runID, "status": "RUNNING"}
+	newState := map[string]any{"run_id": runID, "status": finalStatus, "applied_versions": appliedVersions}
+	if message != "" {
+		newState["error"] = message
+	}
+	if _, txErr = finishTx.ExecContext(finishCtx, `UPDATE platform_migration_runs SET status=?,applied_versions=?,error_message=NULLIF(?,''),active_key=NULL,finished_at=UTC_TIMESTAMP(),updated_at=UTC_TIMESTAMP() WHERE run_id=?`, finalStatus, appliedJSON, message, runID); txErr == nil {
+		txErr = h.auditTx(finishCtx, finishTx, actorID, action, "database_migrations", 0, oldState, newState)
+	}
+	if txErr == nil {
+		txErr = finishTx.Commit()
+	}
+	if txErr != nil {
+		log.Printf("migration run %s final state/audit could not be committed: %v", runID, txErr)
+		return
+	}
+	if runErr != nil {
+		log.Printf("migration run %s failed for database %q: %v", runID, databaseName, runErr)
+	}
+}
+
+func (h *Handler) GetMigrationRun(w http.ResponseWriter, r *http.Request) {
+	runID := strings.TrimSpace(chi.URLParam(r, "id"))
+	if len(runID) != 32 {
+		httpx.Fail(w, apperr.InvalidID)
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	defer cancel()
+	var requestedBy int64
+	var databaseName, status string
+	var expectedJSON []byte
+	var appliedJSON, errorMessage sql.NullString
+	var startedAt, finishedAt sql.NullTime
+	var createdAt, updatedAt time.Time
+	err := h.db.QueryRowContext(ctx, `SELECT requested_by,target_database,status,expected_versions,CAST(applied_versions AS CHAR),error_message,started_at,finished_at,created_at,updated_at FROM platform_migration_runs WHERE run_id=?`, runID).Scan(&requestedBy, &databaseName, &status, &expectedJSON, &appliedJSON, &errorMessage, &startedAt, &finishedAt, &createdAt, &updatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		httpx.Fail(w, apperr.NotFound)
+		return
+	}
+	if err != nil {
+		httpx.Fail(w, apperr.Database)
+		return
+	}
+	var expectedVersions []int
+	appliedVersions := make([]int, 0)
+	if err := json.Unmarshal(expectedJSON, &expectedVersions); err != nil {
+		httpx.Fail(w, apperr.Database)
+		return
+	}
+	if appliedJSON.Valid {
+		if err := json.Unmarshal([]byte(appliedJSON.String), &appliedVersions); err != nil {
+			httpx.Fail(w, apperr.Database)
+			return
+		}
+	}
+	result := map[string]any{
+		"run_id": runID, "requested_by": requestedBy, "target_database": databaseName,
+		"status": status, "expected_versions": expectedVersions, "applied_versions": appliedVersions,
+		"created_at": createdAt.UTC(), "updated_at": updatedAt.UTC(),
+	}
+	if errorMessage.Valid && errorMessage.String != "" {
+		result["error_message"] = errorMessage.String
+	}
+	if startedAt.Valid {
+		result["started_at"] = startedAt.Time.UTC()
+	}
+	if finishedAt.Valid {
+		result["finished_at"] = finishedAt.Time.UTC()
+	}
+	httpx.OK(w, result)
+}
+
+func migrationUIEnabled() bool {
+	return strings.EqualFold(strings.TrimSpace(os.Getenv("PLATFORM_MIGRATIONS_UI_ENABLED")), "true")
+}
+
+func sameVersions(a, b []int) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	aa := append([]int(nil), a...)
+	bb := append([]int(nil), b...)
+	sort.Ints(aa)
+	sort.Ints(bb)
+	for i := range aa {
+		if aa[i] != bb[i] {
+			return false
+		}
+	}
+	return true
+}
+
 func pathID(w http.ResponseWriter, r *http.Request) (int64, bool) {
 	id, err := httpx.ID(chi.URLParam(r, "id"))
 	if err != nil || id < 1 {

@@ -70,3 +70,8 @@ Run standard tests with `go test ./...`, integration tests with `go test -tags=i
 
 
 **Shared-to-dedicated migration safety:** current automated provisioning copies tenant identity and role grants, but does not migrate existing visitor, site, gatepass, check-in/out, workflow, audit, notification, or organization-setting history. Therefore the API and provisioner refuse to switch a shared tenant with operational records to dedicated mode. Export/migrate that history with a separately reviewed data migration before changing database mode; do not bypass this guard. New tenants with only their initial user/role grants can be provisioned directly into a dedicated database.
+
+
+## Platform Admin database migrations UI
+
+See [docs/migrations-ui.md](docs/migrations-ui.md). The UI reads actual embedded migration files and database history; execution is disabled by default and must be enabled temporarily with `PLATFORM_MIGRATIONS_UI_ENABLED=true` during an approved maintenance window. For a new database, bootstrap through `go run ./cmd/migrate up` before using the UI. Migration 0010 adds checksum history and persistent UI-run tracking.

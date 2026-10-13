@@ -3,8 +3,10 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"database/sql"
 	"database/sql/driver"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"log"
@@ -144,6 +146,10 @@ func loadConfig() (*mysql.Config, error) {
 	cfg.MultiStatements = true
 	cfg.ParseTime = true
 	cfg.Loc = time.UTC
+	if cfg.Params == nil {
+		cfg.Params = map[string]string{}
+	}
+	cfg.Params["time_zone"] = "'+00:00'"
 
 	return cfg, nil
 }
@@ -288,60 +294,90 @@ func migrateUp(ctx context.Context, conn *sql.Conn, migrations []Migration) erro
 	if err != nil {
 		return err
 	}
+	knownVersions := make(map[int]bool, len(migrations))
+	for _, migration := range migrations {
+		knownVersions[migration.Version] = true
+	}
+	for version := range applied {
+		if !knownVersions[version] {
+			return fmt.Errorf("database records migration version %04d but no matching migration file exists; restore the matching source before applying more migrations", version)
+		}
+	}
 
 	appliedCount := 0
-
 	for _, migration := range migrations {
-		if applied[migration.Version] {
-			continue
-		}
-
-		fmt.Printf("Applying migration %04d_%s...\n", migration.Version, migration.Name)
-
 		content, err := os.ReadFile(migration.Path)
 		if err != nil {
 			return fmt.Errorf("read migration %s: %w", migration.Path, err)
 		}
-
-		// Windows editors often save SQL with a UTF-8 BOM, which MySQL
-		// rejects as a syntax error at the very first statement.
 		content = bytes.TrimPrefix(content, []byte("\xef\xbb\xbf"))
-
 		if len(bytes.TrimSpace(content)) == 0 {
 			return fmt.Errorf("migration %s is empty", migration.Path)
 		}
+		normalized := bytes.ReplaceAll(content, []byte("\r\n"), []byte("\n"))
+		sum := sha256.Sum256(normalized)
+		checksum := hex.EncodeToString(sum[:])
 
-		// Not wrapped in a transaction on purpose: MySQL DDL implicitly
-		// commits. Migrations are therefore written to be re-runnable
-		// (IF NOT EXISTS / guarded ALTERs / INSERT IGNORE).
+		hasChecksums, err := hasMigrationColumn(ctx, conn, "checksum")
+		if err != nil {
+			return err
+		}
+		if applied[migration.Version] {
+			var storedName string
+			var storedChecksum sql.NullString
+			query := `SELECT name,NULL AS checksum FROM schema_migrations WHERE version=?`
+			if hasChecksums {
+				query = `SELECT name,checksum FROM schema_migrations WHERE version=?`
+			}
+			if err := conn.QueryRowContext(ctx, query, migration.Version).Scan(&storedName, &storedChecksum); err != nil {
+				return fmt.Errorf("read recorded migration %04d: %w", migration.Version, err)
+			}
+			if storedName != migration.Name {
+				return fmt.Errorf("migration history drift: version %04d is recorded as %q but source is %q", migration.Version, storedName, migration.Name)
+			}
+			if storedChecksum.Valid && storedChecksum.String != "" && storedChecksum.String != checksum {
+				return fmt.Errorf("migration checksum mismatch for %04d_%s; do not edit an applied migration, add a new migration instead", migration.Version, migration.Name)
+			}
+			continue
+		}
+
+		fmt.Printf("Applying migration %04d_%s...\n", migration.Version, migration.Name)
+		// MySQL DDL auto-commits. Migration files must be safely rerunnable.
 		if _, err := conn.ExecContext(ctx, string(content)); err != nil {
 			return fmt.Errorf(
-				"migration %04d_%s failed: %w\n"+
-					"MySQL DDL is not transactional, so part of this file may already be applied.\n"+
-					"The migration files are re-runnable: fix the cause above and run `migrate up` again",
+				"migration %04d_%s failed: %w\nMySQL DDL is not transactional, so part of this file may already be applied. Fix the cause and rerun migrate up.",
 				migration.Version, migration.Name, err,
 			)
 		}
 
-		if _, err := conn.ExecContext(
-			ctx,
-			`INSERT INTO schema_migrations (version, name) VALUES (?, ?)`,
-			migration.Version, migration.Name,
-		); err != nil {
+		hasChecksums, err = hasMigrationColumn(ctx, conn, "checksum")
+		if err != nil {
+			return err
+		}
+		if hasChecksums {
+			_, err = conn.ExecContext(ctx, `INSERT INTO schema_migrations (version,name,checksum) VALUES (?,?,?)`, migration.Version, migration.Name, checksum)
+		} else {
+			_, err = conn.ExecContext(ctx, `INSERT INTO schema_migrations (version,name) VALUES (?,?)`, migration.Version, migration.Name)
+		}
+		if err != nil {
 			return fmt.Errorf("record migration %d: %w", migration.Version, err)
 		}
 
 		fmt.Printf("Applied migration %04d_%s\n", migration.Version, migration.Name)
 		appliedCount++
 	}
-
 	if appliedCount == 0 {
 		fmt.Println("No pending migrations.")
 	} else {
 		fmt.Printf("Applied %d migration(s).\n", appliedCount)
 	}
-
 	return nil
+}
+
+func hasMigrationColumn(ctx context.Context, conn *sql.Conn, column string) (bool, error) {
+	var n int
+	err := conn.QueryRowContext(ctx, `SELECT COUNT(*) FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name='schema_migrations' AND column_name=?`, column).Scan(&n)
+	return n > 0, err
 }
 
 func migrateDown(ctx context.Context, conn *sql.Conn, migrations []Migration) error {

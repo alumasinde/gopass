@@ -39,3 +39,30 @@ func TestEncryptRejectsMissingKey(t *testing.T) {
 		t.Fatal("expected encryption-key error")
 	}
 }
+
+func TestSameVersionsIgnoresOrderButNotValues(t *testing.T) {
+	if !sameVersions([]int{1, 2, 10}, []int{10, 1, 2}) {
+		t.Fatal("same versions should not depend on ordering")
+	}
+	if sameVersions([]int{1, 2}, []int{1, 3}) {
+		t.Fatal("different versions must not match")
+	}
+	if sameVersions([]int{1}, []int{1, 1}) {
+		t.Fatal("duplicate confirmation versions must not match")
+	}
+}
+
+func TestMigrationUIRequiresExplicitFlag(t *testing.T) {
+	t.Setenv("PLATFORM_MIGRATIONS_UI_ENABLED", "")
+	if migrationUIEnabled() {
+		t.Fatal("migration UI must be disabled by default")
+	}
+	t.Setenv("PLATFORM_MIGRATIONS_UI_ENABLED", "false")
+	if migrationUIEnabled() {
+		t.Fatal("false should disable migration execution")
+	}
+	t.Setenv("PLATFORM_MIGRATIONS_UI_ENABLED", "true")
+	if !migrationUIEnabled() {
+		t.Fatal("true should enable migration execution")
+	}
+}

@@ -1207,6 +1207,57 @@ paths:
           description: Forbidden
         '404':
           description: Not found
+  /platform/migrations:
+    get:
+      summary: Get real migration status for the central platform database
+      description: Requires a valid platform administrator session. Reports embedded migration files, applied history, pending versions and checksum drift.
+      responses:
+        '200':
+          description: Migration status
+        '401':
+          description: Platform session is invalid or expired
+  /platform/migrations/run:
+    post:
+      summary: Queue pending database migrations
+      description: Requires PLATFORM_MIGRATIONS_UI_ENABLED=true, a valid platform administrator session, and exact operator confirmation. The operation runs asynchronously and is audited.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [confirmation, expected_versions]
+              properties:
+                confirmation:
+                  type: string
+                  enum: [APPLY PENDING MIGRATIONS]
+                expected_versions:
+                  type: array
+                  items:
+                    type: integer
+      responses:
+        '202':
+          description: Migration run queued
+        '403':
+          description: UI migration execution is disabled
+        '409':
+          description: Migration history drift or another run is active
+  /platform/migrations/runs/{id}:
+    get:
+      summary: Get migration run progress and outcome
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            minLength: 32
+            maxLength: 32
+      responses:
+        '200':
+          description: Persisted migration run state
+        '404':
+          description: Migration run not found
 components:
   securitySchemes:
     bearerAuth:

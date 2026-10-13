@@ -17,3 +17,6 @@ API timestamps should be RFC3339 UTC (with `Z`) and the frontend should convert 
 5. Existing rows remain unchanged; they are already stored in UTC.
 
 To view a raw UTC timestamp in Kenyan time in a read-only query, use `DATE_ADD(created_at, INTERVAL 3 HOUR) AS created_at_eat`. Do not use that transformed value for comparisons, writes or expiry decisions.
+
+
+The MySQL driver is configured with both `Loc=UTC`/`parseTime=true` and the MySQL session system variable `time_zone='+00:00'`. `Loc` controls Go-side parsing; the session variable ensures MySQL `TIMESTAMP` defaults and conversions use UTC too. The API, CLI migrator, and dedicated-tenant connections must preserve both settings.

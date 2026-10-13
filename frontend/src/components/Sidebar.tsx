@@ -1,4 +1,6 @@
-import { useLocation, useNavigate } from "react-router-dom";
+import { useState } from 'react';
+import { useLocation, useNavigate } from 'react-router-dom';
+import { platformAuth } from '../lib/platform-api';
 
 interface NavItem {
   path: string;
@@ -7,109 +9,68 @@ interface NavItem {
 }
 
 const navItems: NavItem[] = [
-  { path: "/platform/dashboard", label: "Dashboard", icon: "📊" },
-  { path: "/platform/tenants", label: "Tenants", icon: "🏢" },
-  { path: "/platform/admins", label: "Admins", icon: "👤" },
-  { path: "/platform/migrations", label: "Migrations", icon: "🔄" },
+  { path: '/platform/dashboard', label: 'Dashboard', icon: '▦' },
+  { path: '/platform/tenants', label: 'Tenants', icon: '▤' },
+  { path: '/platform/admins', label: 'Administrators', icon: '♙' },
+  { path: '/platform/migrations', label: 'Database migrations', icon: '↻' },
 ];
 
 export default function Sidebar() {
   const location = useLocation();
   const navigate = useNavigate();
+  const [loggingOut, setLoggingOut] = useState(false);
+
+  const logout = async () => {
+    if (loggingOut) return;
+    setLoggingOut(true);
+    try {
+      await platformAuth.logout();
+    } catch {
+      // Always clear local credentials even if the API is unavailable.
+    } finally {
+      localStorage.removeItem('platform_access_token');
+      window.location.href = '/platform/login';
+    }
+  };
 
   return (
-    <aside
-      style={{
-        width: "250px",
-        backgroundColor: "#1f2937",
-        color: "white",
-        minHeight: "100vh",
-        display: "flex",
-        flexDirection: "column",
-      }}
-    >
-      <div
-        style={{
-          padding: "1.5rem",
-          borderBottom: "1px solid #374151",
-        }}
-      >
-        <h2 style={{ fontSize: "1.25rem", fontWeight: "bold", margin: 0 }}>
-          GoPass
-        </h2>
-        <p
-          style={{
-            fontSize: "0.75rem",
-            color: "#9ca3af",
-            margin: "0.25rem 0 0 0",
-          }}
-        >
-          Platform Admin
-        </p>
+    <aside className="platform-sidebar">
+      <div className="platform-brand">
+        <div className="platform-brand-mark">G</div>
+        <div>
+          <strong>GoPass</strong>
+          <span>Platform control</span>
+        </div>
       </div>
-
-      <nav style={{ flex: 1, padding: "1rem 0" }}>
+      <div className="platform-nav-label">WORKSPACE</div>
+      <nav className="platform-nav" aria-label="Platform administration">
         {navItems.map((item) => {
-          const isActive =
-            location.pathname === item.path ||
-            (item.path !== "/platform/dashboard" &&
-              location.pathname.startsWith(item.path));
-
+          const active = location.pathname === item.path ||
+            (item.path !== '/platform/dashboard' && location.pathname.startsWith(item.path));
           return (
             <button
               key={item.path}
+              type="button"
+              className={`platform-nav-item${active ? ' active' : ''}`}
+              aria-current={active ? 'page' : undefined}
               onClick={() => navigate(item.path)}
-              style={{
-                width: "100%",
-                padding: "0.75rem 1.5rem",
-                backgroundColor: isActive ? "#374151" : "transparent",
-                color: isActive ? "white" : "#9ca3af",
-                border: "none",
-                textAlign: "left",
-                fontSize: "0.875rem",
-                cursor: "pointer",
-                display: "flex",
-                alignItems: "center",
-                gap: "0.75rem",
-                transition: "background-color 0.2s",
-              }}
-              onMouseEnter={(e) => {
-                if (!isActive) {
-                  e.currentTarget.style.backgroundColor = "#374151";
-                }
-              }}
-              onMouseLeave={(e) => {
-                if (!isActive) {
-                  e.currentTarget.style.backgroundColor = "transparent";
-                }
-              }}
             >
-              <span style={{ fontSize: "1.25rem" }}>{item.icon}</span>
-              {item.label}
+              <span className="platform-nav-icon" aria-hidden="true">{item.icon}</span>
+              <span>{item.label}</span>
+              {active && <span className="platform-nav-active-dot" aria-hidden="true" />}
             </button>
           );
         })}
       </nav>
-
-      <div style={{ padding: "1rem", borderTop: "1px solid #374151" }}>
+      <div className="platform-sidebar-bottom">
+        <div className="platform-secure-label"><span /> Secured control plane</div>
         <button
-          onClick={() => {
-            localStorage.removeItem("platform_access_token");
-            window.location.href = "/platform/login";
-          }}
-          style={{
-            width: "100%",
-            padding: "0.75rem",
-            backgroundColor: "#dc2626",
-            color: "white",
-            border: "none",
-            borderRadius: "4px",
-            fontSize: "0.875rem",
-            fontWeight: "500",
-            cursor: "pointer",
-          }}
+          type="button"
+          className="platform-logout"
+          onClick={() => void logout()}
+          disabled={loggingOut}
         >
-          Logout
+          <span aria-hidden="true">↪</span> {loggingOut ? 'Signing out…' : 'Sign out'}
         </button>
       </div>
     </aside>

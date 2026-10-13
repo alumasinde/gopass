@@ -135,5 +135,11 @@ func DSN() string {
 	// as UTC instead of the machine's local timezone (e.g. Africa/Nairobi).
 	c.ParseTime = true
 	c.Loc = time.UTC
+	if c.Params == nil {
+		c.Params = map[string]string{}
+	}
+	// `loc` controls Go-side parsing; `time_zone` controls MySQL's session.
+	// Both must be UTC so TIMESTAMP defaults and parsed DATETIME values agree.
+	c.Params["time_zone"] = "'+00:00'"
 	return c.FormatDSN()
 }

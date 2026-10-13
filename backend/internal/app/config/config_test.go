@@ -21,6 +21,9 @@ func TestDSNAlwaysParsesDatabaseTimesAsUTC(t *testing.T) {
 	if cfg.Loc != time.UTC {
 		t.Fatalf("DSN location = %v, want UTC", cfg.Loc)
 	}
+	if cfg.Params["time_zone"] != "'+00:00'" {
+		t.Fatalf("MySQL session time_zone = %q, want '+00:00'", cfg.Params["time_zone"])
+	}
 }
 
 func TestDSNUsesUTCForComponentConfiguration(t *testing.T) {
@@ -38,5 +41,8 @@ func TestDSNUsesUTCForComponentConfiguration(t *testing.T) {
 	}
 	if !cfg.ParseTime {
 		t.Fatal("ParseTime must be enabled")
+	}
+	if cfg.Params["time_zone"] != "'+00:00'" {
+		t.Fatalf("MySQL session time_zone = %q, want '+00:00'", cfg.Params["time_zone"])
 	}
 }

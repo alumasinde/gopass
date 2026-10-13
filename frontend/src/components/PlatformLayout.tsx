@@ -7,11 +7,9 @@ interface PlatformLayoutProps {
 
 export default function PlatformLayout({ children }: PlatformLayoutProps) {
   return (
-    <div style={{ display: 'flex', minHeight: '100vh' }}>
+    <div className="platform-shell">
       <Sidebar />
-      <main style={{ flex: 1, backgroundColor: '#f9fafb', overflow: 'auto' }}>
-        {children}
-      </main>
+      <main className="platform-main">{children}</main>
     </div>
   );
 }

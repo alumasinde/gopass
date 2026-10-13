@@ -18,6 +18,12 @@ func Open(ctx context.Context, dsn string) (*sql.DB, error) {
 	}
 	cfg.ParseTime = true
 	cfg.Loc = time.UTC
+	// Never enable multi-statement execution on the general application pool.
+	cfg.MultiStatements = false
+	if cfg.Params == nil {
+		cfg.Params = map[string]string{}
+	}
+	cfg.Params["time_zone"] = "'+00:00'"
 	db, e := sql.Open("mysql", cfg.FormatDSN())
 	if e != nil {
 		return nil, e
