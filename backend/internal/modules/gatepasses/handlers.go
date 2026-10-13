@@ -1,0 +1,167 @@
+package gatepasses
+
+import (
+	"database/sql"
+	"errors"
+	"net/http"
+	"time"
+
+	"github.com/alumasinde/gopass/internal/platform/apperr"
+	"github.com/alumasinde/gopass/internal/platform/audit"
+	"github.com/alumasinde/gopass/internal/platform/httpx"
+	"github.com/alumasinde/gopass/internal/platform/rbac"
+	"github.com/alumasinde/gopass/internal/platform/tenancy"
+	"github.com/go-chi/chi/v5"
+)
+
+type Handler struct {
+	authz   *rbac.Service
+	audit   *audit.Service
+	service *Service
+}
+
+func NewHandler(db *sql.DB, a *rbac.Service, au *audit.Service) *Handler {
+	return &Handler{a, au, NewService(db, a, au)}
+}
+func (h *Handler) registerRoutes(r chi.Router) {
+	r.Route("/gatepasses", func(r chi.Router) {
+		r.Get("/", h.List)
+		r.Post("/", h.Create)
+		r.Get("/{id}", h.Get)
+		r.Post("/{id}/submit", h.Submit)
+		r.Post("/{id}/cancel", h.Cancel)
+		r.Post("/{id}/revoke", h.Revoke)
+	})
+}
+func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
+	o, _ := tenancy.ID(r.Context())
+	v, e := h.service.List(r.Context(), o)
+	if e != nil {
+		httpx.Fail(w, apperr.Database)
+		return
+	}
+	httpx.OK(w, v)
+}
+func (h *Handler) Get(w http.ResponseWriter, r *http.Request) {
+	id, e := httpx.ID(chi.URLParam(r, "id"))
+	if e != nil {
+		httpx.Fail(w, apperr.InvalidID)
+		return
+	}
+	o, _ := tenancy.ID(r.Context())
+	v, e := h.service.Get(r.Context(), o, id)
+	if errors.Is(e, ErrNotFound) {
+		httpx.Fail(w, apperr.NotFound)
+		return
+	}
+	if e != nil {
+		httpx.Fail(w, apperr.Database)
+		return
+	}
+	if e := h.authz.RequireWithScope(r.Context(), "gatepasses.view", rbac.ScopeGate, v.GateID); e != nil {
+		httpx.Fail(w, apperr.NotFound)
+		return
+	}
+	httpx.OK(w, v)
+}
+func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		VisitorID  int64  `json:"visitor_id"`
+		GateID     int64  `json:"gate_id"`
+		PassTypeID int64  `json:"pass_type_id"`
+		ValidFrom  string `json:"valid_from"`
+		ValidUntil string `json:"valid_until"`
+	}
+	if httpx.Decode(r, &in) != nil {
+		httpx.Fail(w, apperr.InvalidJSON)
+		return
+	}
+	vf, e := time.Parse(time.RFC3339, in.ValidFrom)
+	if e != nil {
+		httpx.Fail(w, apperr.InvalidRequest.With("valid_from must be RFC3339"))
+		return
+	}
+	vu, e := time.Parse(time.RFC3339, in.ValidUntil)
+	if e != nil {
+		httpx.Fail(w, apperr.InvalidRequest.With("valid_until must be RFC3339"))
+		return
+	}
+	o, _ := tenancy.ID(r.Context())
+	if e := h.authz.RequireWithScope(r.Context(), "gatepasses.create", rbac.ScopeGate, in.GateID); e != nil {
+		httpx.Fail(w, apperr.Forbidden)
+		return
+	}
+	v, e := h.service.Create(r.Context(), o, in.VisitorID, in.GateID, in.PassTypeID, vf, vu)
+	if errors.Is(e, ErrBlacklisted) {
+		httpx.Fail(w, apperr.Conflict.With("visitor is blacklisted"))
+		return
+	}
+	if errors.Is(e, ErrInvalid) {
+		httpx.Fail(w, apperr.InvalidRequest)
+		return
+	}
+	if e != nil {
+		httpx.Fail(w, apperr.Database)
+		return
+	}
+	httpx.Created(w, v)
+}
+func (h *Handler) Submit(w http.ResponseWriter, r *http.Request) {
+	id, e := httpx.ID(chi.URLParam(r, "id"))
+	if e != nil {
+		httpx.Fail(w, apperr.InvalidID)
+		return
+	}
+	o, _ := tenancy.ID(r.Context())
+	status, e := h.service.Submit(r.Context(), o, id)
+	switch {
+	case errors.Is(e, ErrNotFound):
+		httpx.Fail(w, apperr.NotFound)
+	case errors.Is(e, ErrTransition):
+		httpx.Fail(w, apperr.Conflict.With("gatepass cannot be submitted from its current state"))
+	case errors.Is(e, ErrBlacklisted):
+		httpx.Fail(w, apperr.Conflict.With("visitor is blacklisted"))
+	case errors.Is(e, ErrApprovalRequired):
+		httpx.Fail(w, apperr.Conflict.With("approval workflow is not configured"))
+	case errors.Is(e, ErrInvalid):
+		httpx.Fail(w, apperr.InvalidRequest)
+	case errors.Is(e, rbac.ErrForbidden):
+		httpx.Fail(w, apperr.Forbidden)
+	case e != nil:
+		httpx.Fail(w, apperr.Database)
+	default:
+		httpx.OK(w, map[string]any{"id": id, "status": status})
+	}
+}
+func (h *Handler) Cancel(w http.ResponseWriter, r *http.Request) {
+	h.transition(w, r, StatusCancelled)
+}
+func (h *Handler) Revoke(w http.ResponseWriter, r *http.Request) {
+	h.transition(w, r, StatusRevoked)
+}
+func (h *Handler) transition(w http.ResponseWriter, r *http.Request, to string) {
+	id, e := httpx.ID(chi.URLParam(r, "id"))
+	if e != nil {
+		httpx.Fail(w, apperr.InvalidID)
+		return
+	}
+	o, _ := tenancy.ID(r.Context())
+	e = h.service.Transition(r.Context(), o, id, to)
+	if errors.Is(e, ErrNotFound) {
+		httpx.Fail(w, apperr.NotFound)
+		return
+	}
+	if errors.Is(e, ErrTransition) {
+		httpx.Fail(w, apperr.Conflict.With("invalid gatepass state transition"))
+		return
+	}
+	if errors.Is(e, rbac.ErrForbidden) {
+		httpx.Fail(w, apperr.Forbidden)
+		return
+	}
+	if e != nil {
+		httpx.Fail(w, apperr.Database)
+		return
+	}
+	httpx.OK(w, map[string]any{"id": id, "status": to})
+}
