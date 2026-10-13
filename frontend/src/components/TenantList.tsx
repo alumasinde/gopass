@@ -6,9 +6,10 @@ import { formatLocalDate } from '../lib/dateUtils';
 interface TenantListProps {
   tenants: Organization[];
   onAction: () => void;
+  onRowClick?: (id: number) => void;
 }
 
-export default function TenantList({ tenants, onAction }: TenantListProps) {
+export default function TenantList({ tenants, onAction, onRowClick }: TenantListProps) {
   const [actionLoading, setActionLoading] = useState<{ [key: number]: string }>({});
 
   const handleSuspend = async (id: number) => {
@@ -110,7 +111,11 @@ export default function TenantList({ tenants, onAction }: TenantListProps) {
         </thead>
         <tbody>
           {tenants.map((tenant) => (
-            <tr key={tenant.id} style={{ borderBottom: '1px solid #e5e7eb' }}>
+            <tr 
+              key={tenant.id} 
+              style={{ borderBottom: '1px solid #e5e7eb', cursor: onRowClick ? 'pointer' : 'default' }}
+              onClick={() => onRowClick?.(tenant.id)}
+            >
               <td style={{ padding: '0.75rem 1rem', fontSize: '0.875rem', color: '#374151' }}>{tenant.id}</td>
               <td style={{ padding: '0.75rem 1rem', fontSize: '0.875rem', color: '#374151', fontWeight: '500' }}>{tenant.name}</td>
               <td style={{ padding: '0.75rem 1rem', fontSize: '0.875rem', color: '#6b7280' }}>{tenant.slug}</td>
