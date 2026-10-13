@@ -152,7 +152,7 @@ This document summarizes all security and functionality improvements made to the
 
 ## Remaining Work (Not Blockers)
 
-The following items are noted as important improvements but are not critical blockers:
+The following items remain important follow-up work and must be completed before claiming full production readiness:
 
 1. **Background Jobs** - Pass expiry, token cleanup, and notifications
 2. **API Documentation** - Expand openapi.yaml from 7 to ~40 routes
@@ -191,4 +191,4 @@ Based on `TESTING.md`, the following integration tests should be added:
 - [x] Error handling improvements
 - [x] Code formatting
 
-All critical security vulnerabilities have been addressed. The codebase is now significantly more secure and production-ready.
+This document records the earlier hardening pass; it is not a guarantee of production readiness. See `SECURITY_REVIEW.md` for the subsequent session-revocation, RBAC-scope, cross-organization, audit, migration, and validation notes.

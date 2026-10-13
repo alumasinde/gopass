@@ -3,6 +3,7 @@ package users
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"net"
 	"net/http"
 	"strings"
@@ -90,11 +91,17 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	var organizationActive bool
+	if err := h.db.QueryRowContext(r.Context(), `SELECT is_active FROM organizations WHERE id=?`, org).Scan(&organizationActive); err != nil || !organizationActive {
+		httpx.Fail(w, apperr.Unauthorized.With("invalid credentials"))
+		return
+	}
+
 	user, accessToken, refreshToken, e := h.Service.Authenticate(r.Context(), org, in.Email, in.Password)
 	if e != nil {
 		h.rateLimiter.RecordLoginAttempt(ip, in.Email, false)
 		if h.audit != nil {
-			h.audit.Record(r.Context(), audit.Entry{Action: "user.login_failed", ResourceType: "user", ResourceID: 0})
+			h.audit.Record(r.Context(), audit.Entry{OrganizationID: org, Action: "user.login_failed", ResourceType: "user", ResourceID: 0})
 		}
 		if e == ErrUserNotFound || e == ErrInvalidPassword {
 			httpx.Fail(w, apperr.Unauthorized.With("invalid credentials"))
@@ -106,7 +113,7 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 
 	h.rateLimiter.RecordLoginAttempt(ip, in.Email, true)
 	if h.audit != nil {
-		h.audit.Record(r.Context(), audit.Entry{Action: "user.login", ResourceType: "user", ResourceID: user.ID})
+		h.audit.Record(r.Context(), audit.Entry{OrganizationID: org, ActorUserID: user.ID, Action: "user.login", ResourceType: "user", ResourceID: user.ID})
 	}
 	httpx.OK(w, map[string]any{
 		"user":          map[string]any{"id": user.ID, "first_name": user.FirstName, "last_name": user.LastName, "email": user.Email},
@@ -130,6 +137,9 @@ func (h *Handler) Refresh(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if claims, err := h.Auth.Parse(in.RefreshToken); err == nil && h.audit != nil {
+		h.audit.Record(r.Context(), audit.Entry{OrganizationID: claims.OrgID, ActorUserID: claims.UserID, Action: "user.session_refreshed", ResourceType: "session", ResourceID: claims.UserID})
+	}
 	httpx.OK(w, map[string]any{"access_token": newAccessToken, "refresh_token": newRefreshToken})
 }
 
@@ -143,10 +153,17 @@ func (h *Handler) Logout(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if e := h.Service.Logout(r.Context(), in.RefreshToken); e != nil {
-		httpx.Fail(w, apperr.Database)
+		if errors.Is(e, ErrInvalidRefreshToken) {
+			httpx.Fail(w, apperr.Unauthorized.With("invalid refresh token"))
+		} else {
+			httpx.Fail(w, apperr.Database)
+		}
 		return
 	}
 
+	if claims, err := h.Auth.Parse(in.RefreshToken); err == nil && h.audit != nil {
+		h.audit.Record(r.Context(), audit.Entry{OrganizationID: claims.OrgID, ActorUserID: claims.UserID, Action: "user.session_revoked", ResourceType: "session", ResourceID: claims.UserID})
+	}
 	httpx.OK(w, map[string]any{"message": "logged out successfully"})
 }
 

@@ -68,10 +68,6 @@ func (h *Handler) Get(w http.ResponseWriter, r *http.Request) {
 	httpx.Fail(w, apperr.NotFound)
 }
 func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
-	if h.authz.Require(r.Context(), "credentials.issue") != nil {
-		httpx.Fail(w, apperr.Forbidden)
-		return
-	}
 	var in struct {
 		GatepassID int64 `json:"gatepass_id"`
 	}
@@ -101,10 +97,6 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 	httpx.Created(w, v)
 }
 func (h *Handler) Verify(w http.ResponseWriter, r *http.Request) {
-	if h.authz.Require(r.Context(), "credentials.verify") != nil {
-		httpx.Fail(w, apperr.Forbidden)
-		return
-	}
 	var in struct {
 		Token string `json:"token"`
 	}
@@ -128,10 +120,6 @@ func (h *Handler) Verify(w http.ResponseWriter, r *http.Request) {
 	httpx.OK(w, map[string]any{"valid": true, "credential": v})
 }
 func (h *Handler) Revoke(w http.ResponseWriter, r *http.Request) {
-	if h.authz.Require(r.Context(), "credentials.revoke") != nil {
-		httpx.Fail(w, apperr.Forbidden)
-		return
-	}
 	id, e := httpx.ID(chi.URLParam(r, "id"))
 	if e != nil {
 		httpx.Fail(w, apperr.InvalidID)
@@ -141,6 +129,10 @@ func (h *Handler) Revoke(w http.ResponseWriter, r *http.Request) {
 	e = h.service.Revoke(r.Context(), o, id)
 	if errors.Is(e, ErrNotFound) {
 		httpx.Fail(w, apperr.NotFound)
+		return
+	}
+	if errors.Is(e, rbac.ErrForbidden) {
+		httpx.Fail(w, apperr.Forbidden)
 		return
 	}
 	if e != nil {

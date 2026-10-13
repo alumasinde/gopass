@@ -183,13 +183,39 @@ func (s *Service) AssignRoleToUser(ctx context.Context, orgID, userID, roleID in
 		return ErrInvalidScope
 	}
 
-	if scopeType == ScopeSite && siteID == nil {
+	if scopeType == "" {
 		scopeType = ScopeOrganization
 	}
-	if scopeType == ScopeGate && gateID == nil {
-		scopeType = ScopeOrganization
+	switch scopeType {
+	case ScopeOrganization:
+		if siteID != nil || gateID != nil {
+			return ErrInvalidScope
+		}
+	case ScopeSite:
+		if siteID == nil || *siteID < 1 || gateID != nil {
+			return ErrInvalidScope
+		}
+		owner, err := s.repo.GetSiteOrganization(ctx, *siteID)
+		if err != nil {
+			return err
+		}
+		if owner != orgID {
+			return ErrInvalidScope
+		}
+	case ScopeGate:
+		if gateID == nil || *gateID < 1 || siteID != nil {
+			return ErrInvalidScope
+		}
+		owner, err := s.repo.GetGateOrganization(ctx, *gateID)
+		if err != nil {
+			return err
+		}
+		if owner != orgID {
+			return ErrInvalidScope
+		}
+	default:
+		return ErrInvalidScope
 	}
-
 	return s.repo.AssignToUser(ctx, orgID, userID, roleID, scopeType, siteID, gateID)
 }
 

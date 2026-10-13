@@ -59,7 +59,7 @@ func (s *Service) Create(c context.Context, o int64, token string, gate int64) (
 	var validFrom, validUntil time.Time
 	var exp time.Time
 	tokHash := hashToken(token)
-	err := tx.QueryRowContext(c, `SELECT gp.id,gp.gate_id,gp.status,gp.valid_from,gp.valid_until,cr.expires_at FROM credentials cr JOIN gatepasses gp ON gp.id=cr.gatepass_id WHERE cr.organization_id=? AND cr.token_hash=? AND cr.is_revoked=0 FOR UPDATE`, o, tokHash).Scan(&gpID, &gpGate, &status, &validFrom, &validUntil, &exp)
+	err := tx.QueryRowContext(c, `SELECT gp.id,gp.gate_id,gp.status,gp.valid_from,gp.valid_until,cr.expires_at FROM credentials cr JOIN gatepasses gp ON gp.id=cr.gatepass_id AND gp.organization_id=cr.organization_id WHERE cr.organization_id=? AND cr.token_hash=? AND cr.is_revoked=0 FOR UPDATE`, o, tokHash).Scan(&gpID, &gpGate, &status, &validFrom, &validUntil, &exp)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -80,7 +80,7 @@ func (s *Service) Create(c context.Context, o int64, token string, gate int64) (
 	}
 	// Recheck visitor blacklist
 	var isBlacklisted bool
-	err = tx.QueryRowContext(c, `SELECT v.is_blacklisted FROM gatepasses gp JOIN visitors v ON v.id=gp.visitor_id WHERE gp.id=?`, gpID).Scan(&isBlacklisted)
+	err = tx.QueryRowContext(c, `SELECT v.is_blacklisted FROM gatepasses gp JOIN visitors v ON v.id=gp.visitor_id AND v.organization_id=gp.organization_id WHERE gp.organization_id=? AND gp.id=?`, o, gpID).Scan(&isBlacklisted)
 	if err != nil {
 		return nil, err
 	}

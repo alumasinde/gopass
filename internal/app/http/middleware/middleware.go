@@ -100,6 +100,9 @@ func (w *sw) WriteHeader(s int) { w.status = s; w.ResponseWriter.WriteHeader(s) 
 type UserChecker interface {
 	IsActive(ctx context.Context, userID, orgID int64) (bool, error)
 }
+type SessionChecker interface {
+	IsSessionActive(ctx context.Context, sessionID string, userID, orgID int64) (bool, error)
+}
 
 func Bearer(a *auth.Service, checker UserChecker) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
@@ -115,13 +118,25 @@ func Bearer(a *auth.Service, checker UserChecker) func(http.Handler) http.Handle
 				return
 			}
 
-			// Check if user is still active
-			if checker != nil {
-				active, err := checker.IsActive(r.Context(), c.UserID, c.OrgID)
-				if err != nil || !active {
-					httpx.Fail(w, apperr.Unauthorized)
-					return
-				}
+			// Fail closed if the access token is not bound to a revocable session.
+			if c.SessionID == "" || checker == nil {
+				httpx.Fail(w, apperr.Unauthorized)
+				return
+			}
+			active, err := checker.IsActive(r.Context(), c.UserID, c.OrgID)
+			if err != nil || !active {
+				httpx.Fail(w, apperr.Unauthorized)
+				return
+			}
+			sessions, ok := checker.(SessionChecker)
+			if !ok {
+				httpx.Fail(w, apperr.Unauthorized)
+				return
+			}
+			sessionActive, err := sessions.IsSessionActive(r.Context(), c.SessionID, c.UserID, c.OrgID)
+			if err != nil || !sessionActive {
+				httpx.Fail(w, apperr.Unauthorized)
+				return
 			}
 
 			ctx := auth.With(r.Context(), c)

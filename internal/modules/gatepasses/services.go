@@ -74,7 +74,7 @@ func (s *Service) accessibleGates(c context.Context, orgID int64) (all bool, ids
 	if !ok {
 		return false, nil, nil
 	}
-	rows, err := s.db.QueryContext(c, `SELECT ur.scope_type,ur.site_id,ur.gate_id FROM user_roles ur JOIN role_permissions rp ON rp.role_id=ur.role_id JOIN permissions p ON p.id=rp.permission_id WHERE ur.user_id=? AND ur.organization_id=? AND ur.is_active=1 AND p.code='gatepasses.view'`, cl.UserID, orgID)
+	rows, err := s.db.QueryContext(c, `SELECT ur.scope_type,ur.site_id,ur.gate_id FROM user_roles ur JOIN users u ON u.id=ur.user_id AND u.organization_id=ur.organization_id JOIN roles r ON r.id=ur.role_id AND r.organization_id=ur.organization_id JOIN role_permissions rp ON rp.role_id=ur.role_id JOIN permissions p ON p.id=rp.permission_id WHERE ur.user_id=? AND ur.organization_id=? AND ur.is_active=1 AND p.code='gatepasses.view'`, cl.UserID, orgID)
 	if err != nil {
 		return false, nil, err
 	}

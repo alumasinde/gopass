@@ -178,19 +178,29 @@ func (r *repository) GetGateOrganization(ctx context.Context, gateID int64) (int
 }
 
 func (r *repository) AssignToUser(ctx context.Context, orgID, userID, roleID int64, scopeType string, siteID, gateID *int64) error {
-	query := `INSERT INTO user_roles(user_id,role_id,organization_id,scope_type,site_id,gate_id,is_active,created_at,updated_at) SELECT ?,id,?,COALESCE(NULLIF(?,''),'ORGANIZATION'),?,?,1,UTC_TIMESTAMP(),UTC_TIMESTAMP() FROM roles WHERE id=? AND organization_id=?`
-	_, err := r.db.ExecContext(ctx, query, userID, orgID, scopeType, siteID, gateID, roleID, orgID)
-	return err
+	query := `INSERT INTO user_roles(user_id,role_id,organization_id,scope_type,site_id,gate_id,is_active,created_at,updated_at) SELECT u.id,ro.id,?, ?,?,?,1,UTC_TIMESTAMP(),UTC_TIMESTAMP() FROM users u JOIN roles ro ON ro.organization_id=u.organization_id WHERE u.id=? AND u.organization_id=? AND ro.id=? AND ro.organization_id=?`
+	res, err := r.db.ExecContext(ctx, query, orgID, scopeType, siteID, gateID, userID, orgID, roleID, orgID)
+	if err != nil {
+		return err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n != 1 {
+		return ErrRoleNotFound
+	}
+	return nil
 }
 
 func (r *repository) RemoveFromUser(ctx context.Context, orgID, userID, roleID int64) error {
-	query := `DELETE FROM user_roles WHERE user_id=? AND role_id=? AND organization_id=?`
-	_, err := r.db.ExecContext(ctx, query, userID, roleID, orgID)
+	query := `DELETE FROM user_roles WHERE user_id=? AND role_id=? AND organization_id=? AND EXISTS(SELECT 1 FROM users WHERE id=? AND organization_id=?)`
+	_, err := r.db.ExecContext(ctx, query, userID, roleID, orgID, userID, orgID)
 	return err
 }
 
 func (r *repository) GetUserRoles(ctx context.Context, orgID, userID int64) ([]UserRole, error) {
-	query := `SELECT ur.id,ur.user_id,ur.role_id,ur.organization_id,ur.scope_type,ur.site_id,ur.gate_id,ur.is_active,r.name,r.code FROM user_roles ur JOIN roles r ON r.id=ur.role_id WHERE ur.user_id=? AND ur.organization_id=? AND ur.is_active=1`
+	query := `SELECT ur.id,ur.user_id,ur.role_id,ur.organization_id,ur.scope_type,ur.site_id,ur.gate_id,ur.is_active,r.name,r.code FROM user_roles ur JOIN users u ON u.id=ur.user_id AND u.organization_id=ur.organization_id JOIN roles r ON r.id=ur.role_id AND r.organization_id=ur.organization_id WHERE ur.user_id=? AND ur.organization_id=? AND ur.is_active=1`
 	rows, err := r.db.QueryContext(ctx, query, userID, orgID)
 	if err != nil {
 		return nil, err

@@ -63,10 +63,6 @@ func (h *Handler) Get(w http.ResponseWriter, r *http.Request) {
 	httpx.Fail(w, apperr.NotFound)
 }
 func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
-	if h.authz.Require(r.Context(), "checkins.perform") != nil {
-		httpx.Fail(w, apperr.Forbidden)
-		return
-	}
 	var in struct {
 		CredentialToken string `json:"credential_token"`
 		GateID          int64  `json:"gate_id"`

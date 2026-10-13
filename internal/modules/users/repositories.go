@@ -19,12 +19,14 @@ type Repository interface {
 	Delete(ctx context.Context, orgID, id int64) error
 	GetPasswordHash(ctx context.Context, orgID int64, email string) (string, error)
 	UpdateLastLogin(ctx context.Context, orgID, id int64) error
-	StoreRefreshToken(ctx context.Context, userID, orgID int64, tokenHash string, expiresAt time.Time) error
-	RotateRefreshToken(ctx context.Context, oldTokenHash string, userID, orgID int64, newTokenHash string, expiresAt time.Time) error
+	StoreRefreshToken(ctx context.Context, userID, orgID int64, sessionID, tokenHash string, expiresAt time.Time) error
+	RotateRefreshToken(ctx context.Context, oldTokenHash string, userID, orgID int64, sessionID, newTokenHash string, expiresAt time.Time) error
 	RevokeRefreshToken(ctx context.Context, tokenHash string) error
+	RevokeSession(ctx context.Context, sessionID string, userID, orgID int64, tokenHash string) error
 	RevokeAllUserRefreshTokens(ctx context.Context, userID int64) error
 	IsRefreshTokenValid(ctx context.Context, tokenHash string) (bool, error)
 	IsActive(ctx context.Context, userID, orgID int64) (bool, error)
+	IsSessionActive(ctx context.Context, sessionID string, userID, orgID int64) (bool, error)
 }
 
 type repository struct{ db *sql.DB }
@@ -158,23 +160,23 @@ func (r *repository) UpdateLastLogin(ctx context.Context, orgID, id int64) error
 	return err
 }
 
-func (r *repository) StoreRefreshToken(ctx context.Context, userID, orgID int64, tokenHash string, expiresAt time.Time) error {
-	query := `INSERT INTO refresh_tokens(user_id, organization_id, token_hash, expires_at, created_at) VALUES(?,?,?,?,UTC_TIMESTAMP())`
-	_, err := r.db.ExecContext(ctx, query, userID, orgID, tokenHash, expiresAt)
+func (r *repository) StoreRefreshToken(ctx context.Context, userID, orgID int64, sessionID, tokenHash string, expiresAt time.Time) error {
+	query := `INSERT INTO refresh_tokens(user_id, organization_id, session_id, token_hash, expires_at, created_at) VALUES(?,?,?,?,?,UTC_TIMESTAMP())`
+	_, err := r.db.ExecContext(ctx, query, userID, orgID, sessionID, tokenHash, expiresAt)
 	return err
 }
 
 // RotateRefreshToken atomically consumes one active refresh token and stores its
 // replacement. A conditional UPDATE plus RowsAffected check makes concurrent
 // refresh attempts single-winner even under READ COMMITTED / REPEATABLE READ.
-func (r *repository) RotateRefreshToken(ctx context.Context, oldTokenHash string, userID, orgID int64, newTokenHash string, expiresAt time.Time) error {
+func (r *repository) RotateRefreshToken(ctx context.Context, oldTokenHash string, userID, orgID int64, sessionID, newTokenHash string, expiresAt time.Time) error {
 	tx, err := r.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
 	if err != nil {
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	res, err := tx.ExecContext(ctx, `UPDATE refresh_tokens SET revoked_at=UTC_TIMESTAMP() WHERE token_hash=? AND user_id=? AND organization_id=? AND revoked_at IS NULL AND expires_at > UTC_TIMESTAMP()`, oldTokenHash, userID, orgID)
+	res, err := tx.ExecContext(ctx, `UPDATE refresh_tokens SET revoked_at=UTC_TIMESTAMP() WHERE token_hash=? AND user_id=? AND organization_id=? AND session_id=? AND revoked_at IS NULL AND expires_at > UTC_TIMESTAMP()`, oldTokenHash, userID, orgID, sessionID)
 	if err != nil {
 		return err
 	}
@@ -185,7 +187,7 @@ func (r *repository) RotateRefreshToken(ctx context.Context, oldTokenHash string
 	if n != 1 {
 		return errors.New("refresh token is invalid, expired, or already used")
 	}
-	if _, err = tx.ExecContext(ctx, `INSERT INTO refresh_tokens(user_id, organization_id, token_hash, expires_at, created_at) VALUES(?,?,?,?,UTC_TIMESTAMP())`, userID, orgID, newTokenHash, expiresAt.UTC()); err != nil {
+	if _, err = tx.ExecContext(ctx, `INSERT INTO refresh_tokens(user_id, organization_id, session_id, token_hash, expires_at, created_at) VALUES(?,?,?,?,?,UTC_TIMESTAMP())`, userID, orgID, sessionID, newTokenHash, expiresAt.UTC()); err != nil {
 		return err
 	}
 	return tx.Commit()
@@ -218,7 +220,7 @@ func (r *repository) IsRefreshTokenValid(ctx context.Context, tokenHash string) 
 
 func (r *repository) IsActive(ctx context.Context, userID, orgID int64) (bool, error) {
 	var isActive bool
-	query := `SELECT is_active FROM users WHERE id=? AND organization_id=?`
+	query := `SELECT u.is_active FROM users u JOIN organizations o ON o.id=u.organization_id AND o.is_active=1 WHERE u.id=? AND u.organization_id=?`
 	err := r.db.QueryRowContext(ctx, query, userID, orgID).Scan(&isActive)
 	if err != nil {
 		if err == sql.ErrNoRows {
@@ -227,4 +229,40 @@ func (r *repository) IsActive(ctx context.Context, userID, orgID int64) (bool, e
 		return false, err
 	}
 	return isActive, nil
+}
+
+// IsSessionActive checks that the login session still has a live refresh token.
+// Revoking the current refresh token therefore revokes its access tokens too.
+func (r *repository) IsSessionActive(ctx context.Context, sessionID string, userID, orgID int64) (bool, error) {
+	if sessionID == "" {
+		return false, nil
+	}
+	var n int
+	err := r.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM refresh_tokens WHERE session_id=? AND user_id=? AND organization_id=? AND revoked_at IS NULL AND expires_at > UTC_TIMESTAMP()`, sessionID, userID, orgID).Scan(&n)
+	return n > 0, err
+}
+
+// RevokeSession revokes every refresh token for a single login session. This
+// also invalidates already-issued access tokens because middleware checks sid.
+func (r *repository) RevokeSession(ctx context.Context, sessionID string, userID, orgID int64, tokenHash string) error {
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	res, err := tx.ExecContext(ctx, `UPDATE refresh_tokens SET revoked_at=UTC_TIMESTAMP() WHERE session_id=? AND user_id=? AND organization_id=? AND token_hash=? AND revoked_at IS NULL AND expires_at>UTC_TIMESTAMP()`, sessionID, userID, orgID, tokenHash)
+	if err != nil {
+		return err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n != 1 {
+		return ErrInvalidRefreshToken
+	}
+	if _, err = tx.ExecContext(ctx, `UPDATE refresh_tokens SET revoked_at=UTC_TIMESTAMP() WHERE session_id=? AND user_id=? AND organization_id=? AND revoked_at IS NULL`, sessionID, userID, orgID); err != nil {
+		return err
+	}
+	return tx.Commit()
 }

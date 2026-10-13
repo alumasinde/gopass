@@ -10,6 +10,8 @@ import (
 )
 
 type Entry struct {
+	OrganizationID       int64
+	ActorUserID          int64
 	Action, ResourceType string
 	ResourceID           int64
 	OldValues, NewValues any
@@ -22,9 +24,14 @@ type Service struct {
 func New(db *sql.DB, l *slog.Logger) *Service { return &Service{db, l} }
 func (s *Service) Record(ctx context.Context, e Entry) {
 	org, _ := tenancy.ID(ctx)
+	if org < 1 {
+		org = e.OrganizationID
+	}
 	var uid any
 	if c, ok := auth.From(ctx); ok {
 		uid = c.UserID
+	} else if e.ActorUserID > 0 {
+		uid = e.ActorUserID
 	}
 	old, _ := json.Marshal(e.OldValues)
 	nw, _ := json.Marshal(e.NewValues)

@@ -12,9 +12,10 @@ import (
 )
 
 type Claims struct {
-	UserID int64  `json:"uid"`
-	OrgID  int64  `json:"oid"`
-	Type   string `json:"typ"`
+	UserID    int64  `json:"uid"`
+	OrgID     int64  `json:"oid"`
+	Type      string `json:"typ"`
+	SessionID string `json:"sid"`
 	jwt.RegisteredClaims
 }
 type key string
@@ -33,6 +34,27 @@ func Hash(p string) (string, error) {
 }
 func Check(h, p string) error { return bcrypt.CompareHashAndPassword([]byte(h), []byte(p)) }
 func (s *Service) Issue(uid, oid int64, refresh bool) (string, error) {
+	sessionID, err := NewSessionID()
+	if err != nil {
+		return "", err
+	}
+	return s.IssueInSession(uid, oid, refresh, sessionID)
+}
+
+// NewSessionID creates a cryptographically random identifier shared by the
+// access and refresh tokens belonging to one login session.
+func NewSessionID() (string, error) {
+	var nonce [16]byte
+	if _, err := rand.Read(nonce[:]); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(nonce[:]), nil
+}
+
+func (s *Service) IssueInSession(uid, oid int64, refresh bool, sessionID string) (string, error) {
+	if uid < 1 || oid < 1 || sessionID == "" {
+		return "", errors.New("invalid token subject or session")
+	}
 	ttl := s.AccessTTL
 	t := "access"
 	if refresh {
@@ -40,13 +62,13 @@ func (s *Service) Issue(uid, oid int64, refresh bool) (string, error) {
 		t = "refresh"
 	}
 	n := time.Now()
-	// A random JWT ID prevents tokens issued for the same user within the same
-	// second from being byte-for-byte identical (important for refresh rotation).
+	// Each JWT has a unique jti, while sid binds access and refresh tokens to
+	// the same revocable server-side session.
 	var nonce [16]byte
 	if _, err := rand.Read(nonce[:]); err != nil {
 		return "", err
 	}
-	c := Claims{uid, oid, t, jwt.RegisteredClaims{Issuer: s.Issuer, Subject: "user", ID: hex.EncodeToString(nonce[:]), IssuedAt: jwt.NewNumericDate(n), ExpiresAt: jwt.NewNumericDate(n.Add(ttl))}}
+	c := Claims{UserID: uid, OrgID: oid, Type: t, SessionID: sessionID, RegisteredClaims: jwt.RegisteredClaims{Issuer: s.Issuer, Subject: "user", ID: hex.EncodeToString(nonce[:]), IssuedAt: jwt.NewNumericDate(n), ExpiresAt: jwt.NewNumericDate(n.Add(ttl))}}
 	return jwt.NewWithClaims(jwt.SigningMethodHS256, c).SignedString([]byte(s.Secret))
 }
 func (s *Service) Parse(tok string) (*Claims, error) {
@@ -67,17 +89,10 @@ func (s *Service) Parse(tok string) (*Claims, error) {
 }
 func (s *Service) Access(tok string) (*Claims, error) {
 	c, e := s.Parse(tok)
-	if e != nil || c.Type != "access" {
+	if e != nil || c.Type != "access" || c.SessionID == "" {
 		return nil, errors.New("invalid access token")
 	}
 	return c, nil
-}
-func (s *Service) Refresh(tok string) (string, error) {
-	c, e := s.Parse(tok)
-	if e != nil || c.Type != "refresh" {
-		return "", errors.New("invalid refresh token")
-	}
-	return s.Issue(c.UserID, c.OrgID, false)
 }
 func With(ctx context.Context, c *Claims) context.Context { return context.WithValue(ctx, Key, c) }
 func From(ctx context.Context) (*Claims, bool)            { c, ok := ctx.Value(Key).(*Claims); return c, ok }

@@ -12,10 +12,11 @@ import (
 )
 
 var (
-	ErrUserNotFound      = errors.New("user not found")
-	ErrInvalidPassword   = errors.New("invalid password")
-	ErrUserAlreadyExists = errors.New("user already exists")
-	ErrInvalidEmail      = errors.New("invalid email")
+	ErrUserNotFound        = errors.New("user not found")
+	ErrInvalidPassword     = errors.New("invalid password")
+	ErrUserAlreadyExists   = errors.New("user already exists")
+	ErrInvalidEmail        = errors.New("invalid email")
+	ErrInvalidRefreshToken = errors.New("invalid refresh token")
 )
 
 type Service struct {
@@ -132,19 +133,23 @@ func (s *Service) Authenticate(ctx context.Context, orgID int64, email, password
 		return nil, "", "", err
 	}
 
-	accessToken, err := s.auth.Issue(user.ID, orgID, false)
+	sessionID, err := auth.NewSessionID()
+	if err != nil {
+		return nil, "", "", err
+	}
+	accessToken, err := s.auth.IssueInSession(user.ID, orgID, false, sessionID)
 	if err != nil {
 		return nil, "", "", err
 	}
 
-	refreshToken, err := s.auth.Issue(user.ID, orgID, true)
+	refreshToken, err := s.auth.IssueInSession(user.ID, orgID, true, sessionID)
 	if err != nil {
 		return nil, "", "", err
 	}
 
 	// Store hashed refresh token
 	tokenHash := hashToken(refreshToken)
-	if err := s.repo.StoreRefreshToken(ctx, user.ID, orgID, tokenHash, time.Now().UTC().Add(s.auth.RefreshTTL)); err != nil {
+	if err := s.repo.StoreRefreshToken(ctx, user.ID, orgID, sessionID, tokenHash, time.Now().UTC().Add(s.auth.RefreshTTL)); err != nil {
 		return nil, "", "", err
 	}
 
@@ -154,7 +159,7 @@ func (s *Service) Authenticate(ctx context.Context, orgID int64, email, password
 func (s *Service) RefreshToken(ctx context.Context, refreshToken string) (string, string, error) {
 	claims, err := s.auth.Parse(refreshToken)
 	if err != nil || claims.Type != "refresh" {
-		return "", "", errors.New("invalid refresh token")
+		return "", "", ErrInvalidRefreshToken
 	}
 
 	user, err := s.repo.GetByID(ctx, claims.OrgID, claims.UserID)
@@ -164,12 +169,21 @@ func (s *Service) RefreshToken(ctx context.Context, refreshToken string) (string
 	if user == nil || !user.IsActive {
 		return "", "", ErrUserNotFound
 	}
-
-	newAccessToken, err := s.auth.Issue(claims.UserID, claims.OrgID, false)
+	active, err := s.repo.IsActive(ctx, claims.UserID, claims.OrgID)
 	if err != nil {
 		return "", "", err
 	}
-	newRefreshToken, err := s.auth.Issue(claims.UserID, claims.OrgID, true)
+	if !active {
+		return "", "", ErrUserNotFound
+	}
+	if claims.SessionID == "" {
+		return "", "", ErrInvalidRefreshToken
+	}
+	newAccessToken, err := s.auth.IssueInSession(claims.UserID, claims.OrgID, false, claims.SessionID)
+	if err != nil {
+		return "", "", err
+	}
+	newRefreshToken, err := s.auth.IssueInSession(claims.UserID, claims.OrgID, true, claims.SessionID)
 	if err != nil {
 		return "", "", err
 	}
@@ -179,15 +193,18 @@ func (s *Service) RefreshToken(ctx context.Context, refreshToken string) (string
 	oldHash := hashToken(refreshToken)
 	newHash := hashToken(newRefreshToken)
 	expiresAt := time.Now().UTC().Add(s.auth.RefreshTTL)
-	if err := s.repo.RotateRefreshToken(ctx, oldHash, claims.UserID, claims.OrgID, newHash, expiresAt); err != nil {
+	if err := s.repo.RotateRefreshToken(ctx, oldHash, claims.UserID, claims.OrgID, claims.SessionID, newHash, expiresAt); err != nil {
 		return "", "", err
 	}
 	return newAccessToken, newRefreshToken, nil
 }
 
 func (s *Service) Logout(ctx context.Context, refreshToken string) error {
-	tokenHash := hashToken(refreshToken)
-	return s.repo.RevokeRefreshToken(ctx, tokenHash)
+	claims, err := s.auth.Parse(refreshToken)
+	if err != nil || claims.Type != "refresh" || claims.SessionID == "" {
+		return ErrInvalidRefreshToken
+	}
+	return s.repo.RevokeSession(ctx, claims.SessionID, claims.UserID, claims.OrgID, hashToken(refreshToken))
 }
 
 func (s *Service) LogoutAll(ctx context.Context, userID int64) error {
@@ -201,6 +218,14 @@ func hashToken(token string) string {
 
 func (s *Service) IsActive(ctx context.Context, userID, orgID int64) (bool, error) {
 	return s.repo.IsActive(ctx, userID, orgID)
+}
+
+func (s *Service) IsSessionActive(ctx context.Context, sessionID string, userID, orgID int64) (bool, error) {
+	active, err := s.repo.IsActive(ctx, userID, orgID)
+	if err != nil || !active {
+		return false, err
+	}
+	return s.repo.IsSessionActive(ctx, sessionID, userID, orgID)
 }
 
 func isValidEmail(email string) bool {

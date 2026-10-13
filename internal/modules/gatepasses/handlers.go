@@ -34,10 +34,6 @@ func (h *Handler) registerRoutes(r chi.Router) {
 	})
 }
 func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
-	if h.authz.Require(r.Context(), "gatepasses.view") != nil {
-		httpx.Fail(w, apperr.Forbidden)
-		return
-	}
 	o, _ := tenancy.ID(r.Context())
 	v, e := h.service.List(r.Context(), o)
 	if e != nil {
@@ -47,10 +43,6 @@ func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
 	httpx.OK(w, v)
 }
 func (h *Handler) Get(w http.ResponseWriter, r *http.Request) {
-	if h.authz.Require(r.Context(), "gatepasses.view") != nil {
-		httpx.Fail(w, apperr.Forbidden)
-		return
-	}
 	id, e := httpx.ID(chi.URLParam(r, "id"))
 	if e != nil {
 		httpx.Fail(w, apperr.InvalidID)
@@ -66,13 +58,13 @@ func (h *Handler) Get(w http.ResponseWriter, r *http.Request) {
 		httpx.Fail(w, apperr.Database)
 		return
 	}
+	if e := h.authz.RequireWithScope(r.Context(), "gatepasses.view", rbac.ScopeGate, v.GateID); e != nil {
+		httpx.Fail(w, apperr.NotFound)
+		return
+	}
 	httpx.OK(w, v)
 }
 func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
-	if h.authz.Require(r.Context(), "gatepasses.create") != nil {
-		httpx.Fail(w, apperr.Forbidden)
-		return
-	}
 	var in struct {
 		VisitorID  int64  `json:"visitor_id"`
 		GateID     int64  `json:"gate_id"`
@@ -116,10 +108,6 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 	httpx.Created(w, v)
 }
 func (h *Handler) Submit(w http.ResponseWriter, r *http.Request) {
-	if h.authz.Require(r.Context(), "gatepasses.submit") != nil {
-		httpx.Fail(w, apperr.Forbidden)
-		return
-	}
 	id, e := httpx.ID(chi.URLParam(r, "id"))
 	if e != nil {
 		httpx.Fail(w, apperr.InvalidID)
@@ -154,10 +142,6 @@ func (h *Handler) Revoke(w http.ResponseWriter, r *http.Request) {
 	h.transition(w, r, "gatepasses.revoke", StatusRevoked, "gatepass.revoked")
 }
 func (h *Handler) transition(w http.ResponseWriter, r *http.Request, p, to, action string) {
-	if h.authz.Require(r.Context(), p) != nil {
-		httpx.Fail(w, apperr.Forbidden)
-		return
-	}
 	id, e := httpx.ID(chi.URLParam(r, "id"))
 	if e != nil {
 		httpx.Fail(w, apperr.InvalidID)

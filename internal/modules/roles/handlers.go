@@ -130,6 +130,7 @@ func (h *Handler) AssignPermission(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
+	h.audit.Record(r.Context(), audit.Entry{Action: "role.permission_assigned", ResourceType: "role", ResourceID: rid, NewValues: map[string]any{"permission_id": in.PermissionID}})
 	httpx.OK(w, map[string]any{"role_id": rid, "permission_id": in.PermissionID})
 }
 
@@ -159,6 +160,7 @@ func (h *Handler) RemovePermission(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
+	h.audit.Record(r.Context(), audit.Entry{Action: "role.permission_removed", ResourceType: "role", ResourceID: rid, OldValues: map[string]any{"permission_id": pid}})
 	httpx.OK(w, map[string]any{"role_id": rid, "permission_id": pid})
 }
 
@@ -206,6 +208,9 @@ func (h *Handler) AssignRole(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	org, _ := tenancy.ID(r.Context())
+	if in.ScopeType == "" {
+		in.ScopeType = ScopeOrganization
+	}
 
 	// Get role details to check if it's a system role
 	role, e := h.service.GetRole(r.Context(), org, in.RoleID)
@@ -263,6 +268,7 @@ func (h *Handler) AssignRole(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
+	h.audit.Record(r.Context(), audit.Entry{Action: "role.assigned", ResourceType: "user_role", ResourceID: in.UserID, NewValues: map[string]any{"user_id": in.UserID, "role_id": in.RoleID, "scope_type": in.ScopeType, "site_id": in.SiteID, "gate_id": in.GateID}})
 	httpx.OK(w, map[string]any{"user_id": in.UserID, "role_id": in.RoleID})
 }
 
@@ -288,6 +294,7 @@ func (h *Handler) RemoveRole(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
+	h.audit.Record(r.Context(), audit.Entry{Action: "role.removed", ResourceType: "user_role", ResourceID: in.UserID, OldValues: map[string]any{"user_id": in.UserID, "role_id": in.RoleID}})
 	httpx.OK(w, map[string]any{"user_id": in.UserID, "role_id": in.RoleID})
 }
 

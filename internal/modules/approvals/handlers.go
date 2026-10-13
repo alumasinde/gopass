@@ -66,13 +66,7 @@ func (h *Handler) Get(w http.ResponseWriter, r *http.Request) {
 	httpx.OK(w, v)
 }
 func (h *Handler) Approve(w http.ResponseWriter, r *http.Request) { h.act(w, r, true) }
-func (h *Handler) Reject(w http.ResponseWriter, r *http.Request) {
-	if h.authz.Require(r.Context(), "approvals.reject") != nil {
-		httpx.Fail(w, apperr.Forbidden)
-		return
-	}
-	h.act(w, r, false)
-}
+func (h *Handler) Reject(w http.ResponseWriter, r *http.Request)  { h.act(w, r, false) }
 func (h *Handler) act(w http.ResponseWriter, r *http.Request, approve bool) {
 	id, e := httpx.ID(chi.URLParam(r, "id"))
 	if e != nil {

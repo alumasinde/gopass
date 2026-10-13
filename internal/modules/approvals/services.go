@@ -57,7 +57,7 @@ func (s *Service) Act(c context.Context, o, id int64, approve bool, note string)
 	var gpID, gateID, stepID, wfID, createdBy int64
 	var status, permission, scope string
 	var order int
-	e = tx.QueryRowContext(c, `SELECT ar.gatepass_id,ar.status,ar.step_order,ar.step_id,ar.workflow_id,gp.gate_id,gp.created_by,COALESCE(aws.permission_code,''),COALESCE(aws.scope_type,'ORGANIZATION') FROM approval_requests ar JOIN gatepasses gp ON gp.id=ar.gatepass_id LEFT JOIN approval_workflow_steps aws ON aws.id=ar.step_id WHERE ar.organization_id=? AND ar.id=? FOR UPDATE`, o, id).Scan(&gpID, &status, &order, &stepID, &wfID, &gateID, &createdBy, &permission, &scope)
+	e = tx.QueryRowContext(c, `SELECT ar.gatepass_id,ar.status,ar.step_order,ar.step_id,ar.workflow_id,gp.gate_id,gp.created_by,COALESCE(aws.permission_code,''),COALESCE(aws.scope_type,'ORGANIZATION') FROM approval_requests ar JOIN gatepasses gp ON gp.id=ar.gatepass_id AND gp.organization_id=ar.organization_id LEFT JOIN approval_workflow_steps aws ON aws.id=ar.step_id AND aws.workflow_id=ar.workflow_id WHERE ar.organization_id=? AND ar.id=? FOR UPDATE`, o, id).Scan(&gpID, &status, &order, &stepID, &wfID, &gateID, &createdBy, &permission, &scope)
 	if errors.Is(e, sql.ErrNoRows) {
 		return ErrNotFound
 	}
@@ -84,7 +84,7 @@ func (s *Service) Act(c context.Context, o, id int64, approve bool, note string)
 		var nextStepID int64
 		var nextOrder int
 		var nextPermission, nextScope string
-		err := tx.QueryRowContext(c, `SELECT id,step_order,permission_code,scope_type FROM approval_workflow_steps WHERE workflow_id=? AND is_active=1 AND step_order>? ORDER BY step_order LIMIT 1`, wfID, order).Scan(&nextStepID, &nextOrder, &nextPermission, &nextScope)
+		err := tx.QueryRowContext(c, `SELECT aws.id,aws.step_order,aws.permission_code,aws.scope_type FROM approval_workflow_steps aws JOIN approval_workflows aw ON aw.id=aws.workflow_id AND aw.organization_id=? WHERE aws.workflow_id=? AND aws.is_active=1 AND aws.step_order>? ORDER BY aws.step_order LIMIT 1`, o, wfID, order).Scan(&nextStepID, &nextOrder, &nextPermission, &nextScope)
 		if errors.Is(err, sql.ErrNoRows) {
 			if _, e = tx.ExecContext(c, `UPDATE approval_requests SET status='APPROVED',acted_by=?,acted_at=UTC_TIMESTAMP(),decision_note=?,updated_at=UTC_TIMESTAMP() WHERE organization_id=? AND id=?`, claims.UserID, note, o, id); e != nil {
 				return e

@@ -127,7 +127,7 @@ func (s *Service) Verify(c context.Context, tokenValue string) (*Credential, err
 		return nil, ErrUnavailable
 	}
 	tokHash := hashToken(strings.TrimSpace(tokenValue))
-	err := s.db.QueryRowContext(c, `SELECT c.id,c.organization_id,c.gatepass_id,c.expires_at,c.is_revoked,gp.gate_id,gp.valid_from,gp.valid_until FROM credentials c JOIN gatepasses gp ON gp.id=c.gatepass_id WHERE c.organization_id=? AND c.token_hash=?`, cl.OrgID, tokHash).Scan(&v.ID, &oid, &gp, &exp, &revoked, &gate, &vf, &vu)
+	err := s.db.QueryRowContext(c, `SELECT c.id,c.organization_id,c.gatepass_id,c.expires_at,c.is_revoked,gp.gate_id,gp.valid_from,gp.valid_until FROM credentials c JOIN gatepasses gp ON gp.id=c.gatepass_id AND gp.organization_id=c.organization_id WHERE c.organization_id=? AND c.token_hash=?`, cl.OrgID, tokHash).Scan(&v.ID, &oid, &gp, &exp, &revoked, &gate, &vf, &vu)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -156,6 +156,17 @@ func (s *Service) Verify(c context.Context, tokenValue string) (*Credential, err
 	return &v, nil
 }
 func (s *Service) Revoke(c context.Context, o, id int64) error {
+	var gateID int64
+	err := s.db.QueryRowContext(c, `SELECT gp.gate_id FROM credentials cr JOIN gatepasses gp ON gp.id=cr.gatepass_id AND gp.organization_id=cr.organization_id WHERE cr.organization_id=? AND cr.id=? AND cr.is_revoked=0`, o, id).Scan(&gateID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ErrNotFound
+	}
+	if err != nil {
+		return err
+	}
+	if err := s.authz.RequireWithScope(c, "credentials.revoke", rbac.ScopeGate, gateID); err != nil {
+		return err
+	}
 	res, e := s.db.ExecContext(c, `UPDATE credentials SET is_revoked=1,updated_at=UTC_TIMESTAMP() WHERE organization_id=? AND id=? AND is_revoked=0`, o, id)
 	if e != nil {
 		return e

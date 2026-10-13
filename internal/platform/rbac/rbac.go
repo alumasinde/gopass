@@ -45,7 +45,7 @@ func (s *Service) Can(ctx context.Context, code string) (bool, error) {
 		return false, nil
 	}
 	var n int
-	err = s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM user_roles ur JOIN role_permissions rp ON rp.role_id=ur.role_id JOIN permissions p ON p.id=rp.permission_id WHERE ur.user_id=? AND ur.organization_id=? AND p.code=? AND ur.is_active=1`, c.UserID, org, strings.TrimSpace(code)).Scan(&n)
+	err = s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM user_roles ur JOIN users u ON u.id=ur.user_id AND u.organization_id=ur.organization_id JOIN roles r ON r.id=ur.role_id AND r.organization_id=ur.organization_id JOIN role_permissions rp ON rp.role_id=ur.role_id JOIN permissions p ON p.id=rp.permission_id WHERE ur.user_id=? AND ur.organization_id=? AND p.code=? AND ur.is_active=1 AND ur.scope_type='ORGANIZATION'`, c.UserID, org, strings.TrimSpace(code)).Scan(&n)
 	return n > 0, err
 }
 
@@ -58,31 +58,41 @@ func (s *Service) CanWithScope(ctx context.Context, code, scopeType string, reso
 	switch scopeType {
 	case ScopeOrganization:
 		var n int
-		err = s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM user_roles ur JOIN role_permissions rp ON rp.role_id=ur.role_id JOIN permissions p ON p.id=rp.permission_id WHERE ur.user_id=? AND ur.organization_id=? AND p.code=? AND ur.is_active=1 AND ur.scope_type='ORGANIZATION'`, c.UserID, org, code).Scan(&n)
+		err = s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM user_roles ur JOIN users u ON u.id=ur.user_id AND u.organization_id=ur.organization_id JOIN roles r ON r.id=ur.role_id AND r.organization_id=ur.organization_id JOIN role_permissions rp ON rp.role_id=ur.role_id JOIN permissions p ON p.id=rp.permission_id WHERE ur.user_id=? AND ur.organization_id=? AND p.code=? AND ur.is_active=1 AND ur.scope_type='ORGANIZATION'`, c.UserID, org, code).Scan(&n)
 		return n > 0, err
 	case ScopeSite:
+		if resourceID < 1 {
+			return false, nil
+		}
+		var exists int
+		if err = s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM sites WHERE id=? AND organization_id=? AND is_active=1`, resourceID, org).Scan(&exists); err != nil || exists != 1 {
+			return false, err
+		}
 		var n int
-		err = s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM user_roles ur JOIN role_permissions rp ON rp.role_id=ur.role_id JOIN permissions p ON p.id=rp.permission_id WHERE ur.user_id=? AND ur.organization_id=? AND p.code=? AND ur.is_active=1 AND (ur.scope_type='ORGANIZATION' OR (ur.scope_type='SITE' AND ur.site_id=?))`, c.UserID, org, code, resourceID).Scan(&n)
+		err = s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM user_roles ur JOIN users u ON u.id=ur.user_id AND u.organization_id=ur.organization_id JOIN roles r ON r.id=ur.role_id AND r.organization_id=ur.organization_id JOIN role_permissions rp ON rp.role_id=ur.role_id JOIN permissions p ON p.id=rp.permission_id WHERE ur.user_id=? AND ur.organization_id=? AND p.code=? AND ur.is_active=1 AND (ur.scope_type='ORGANIZATION' OR (ur.scope_type='SITE' AND ur.site_id=?))`, c.UserID, org, code, resourceID).Scan(&n)
 		return n > 0, err
 	case ScopeGate:
 		// Resolve gate to site for SITE-scoped users
 		var siteID int64
-		err = s.DB.QueryRowContext(ctx, `SELECT site_id FROM gates WHERE id=? AND organization_id=?`, resourceID, org).Scan(&siteID)
-		if err != nil && err != sql.ErrNoRows {
+		err = s.DB.QueryRowContext(ctx, `SELECT site_id FROM gates WHERE id=? AND organization_id=? AND is_active=1`, resourceID, org).Scan(&siteID)
+		if err == sql.ErrNoRows {
+			return false, nil
+		}
+		if err != nil {
 			return false, err
+		}
+		if siteID < 1 {
+			return false, nil
 		}
 		var n int
 		if siteID > 0 {
 			// Check for ORGANIZATION, GATE with exact match, or SITE that matches the gate's site
-			err = s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM user_roles ur JOIN role_permissions rp ON rp.role_id=ur.role_id JOIN permissions p ON p.id=rp.permission_id WHERE ur.user_id=? AND ur.organization_id=? AND p.code=? AND ur.is_active=1 AND (ur.scope_type='ORGANIZATION' OR (ur.scope_type='GATE' AND ur.gate_id=?) OR (ur.scope_type='SITE' AND ur.site_id=?))`, c.UserID, org, code, resourceID, siteID).Scan(&n)
-		} else {
-			// Fallback if gate not found (shouldn't happen normally)
-			err = s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM user_roles ur JOIN role_permissions rp ON rp.role_id=ur.role_id JOIN permissions p ON p.id=rp.permission_id WHERE ur.user_id=? AND ur.organization_id=? AND p.code=? AND ur.is_active=1 AND (ur.scope_type='ORGANIZATION' OR (ur.scope_type='GATE' AND ur.gate_id=?))`, c.UserID, org, code, resourceID).Scan(&n)
+			err = s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM user_roles ur JOIN users u ON u.id=ur.user_id AND u.organization_id=ur.organization_id JOIN roles r ON r.id=ur.role_id AND r.organization_id=ur.organization_id JOIN role_permissions rp ON rp.role_id=ur.role_id JOIN permissions p ON p.id=rp.permission_id WHERE ur.user_id=? AND ur.organization_id=? AND p.code=? AND ur.is_active=1 AND (ur.scope_type='ORGANIZATION' OR (ur.scope_type='GATE' AND ur.gate_id=?) OR (ur.scope_type='SITE' AND ur.site_id=?))`, c.UserID, org, code, resourceID, siteID).Scan(&n)
 		}
 		return n > 0, err
 	case ScopeOwn:
 		var n int
-		err = s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM user_roles ur JOIN role_permissions rp ON rp.role_id=ur.role_id JOIN permissions p ON p.id=rp.permission_id WHERE ur.user_id=? AND ur.organization_id=? AND p.code=? AND ur.is_active=1 AND ur.scope_type='OWN' AND ur.user_id=?`, c.UserID, org, code, resourceID).Scan(&n)
+		err = s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM user_roles ur JOIN users u ON u.id=ur.user_id AND u.organization_id=ur.organization_id JOIN roles r ON r.id=ur.role_id AND r.organization_id=ur.organization_id JOIN role_permissions rp ON rp.role_id=ur.role_id JOIN permissions p ON p.id=rp.permission_id WHERE ur.user_id=? AND ur.organization_id=? AND p.code=? AND ur.is_active=1 AND ur.scope_type='OWN' AND ur.user_id=?`, c.UserID, org, code, resourceID).Scan(&n)
 		return n > 0, err
 	default:
 		return false, fmt.Errorf("invalid scope type")
@@ -111,7 +121,7 @@ func (s *Service) RequireWithScope(ctx context.Context, code, scopeType string, 
 }
 
 func (s *Service) GetUserPermissions(ctx context.Context, userID, orgID int64) ([]string, error) {
-	rows, err := s.DB.QueryContext(ctx, `SELECT DISTINCT p.code FROM user_roles ur JOIN role_permissions rp ON rp.role_id=ur.role_id JOIN permissions p ON p.id=rp.permission_id WHERE ur.user_id=? AND ur.organization_id=? AND ur.is_active=1 ORDER BY p.code`, userID, orgID)
+	rows, err := s.DB.QueryContext(ctx, `SELECT DISTINCT p.code FROM user_roles ur JOIN users u ON u.id=ur.user_id AND u.organization_id=ur.organization_id JOIN roles r ON r.id=ur.role_id AND r.organization_id=ur.organization_id JOIN role_permissions rp ON rp.role_id=ur.role_id JOIN permissions p ON p.id=rp.permission_id WHERE ur.user_id=? AND ur.organization_id=? AND ur.is_active=1 AND ur.scope_type='ORGANIZATION' ORDER BY p.code`, userID, orgID)
 	if err != nil {
 		return nil, err
 	}
@@ -141,6 +151,6 @@ func (s *Service) HasAnyPermission(ctx context.Context, codes []string) (bool, e
 		args = append(args, v)
 	}
 	var n int
-	err = s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM user_roles ur JOIN role_permissions rp ON rp.role_id=ur.role_id JOIN permissions p ON p.id=rp.permission_id WHERE ur.user_id=? AND ur.organization_id=? AND p.code IN (`+strings.Join(ph, ",")+`) AND ur.is_active=1`, args...).Scan(&n)
+	err = s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM user_roles ur JOIN users u ON u.id=ur.user_id AND u.organization_id=ur.organization_id JOIN roles r ON r.id=ur.role_id AND r.organization_id=ur.organization_id JOIN role_permissions rp ON rp.role_id=ur.role_id JOIN permissions p ON p.id=rp.permission_id WHERE ur.user_id=? AND ur.organization_id=? AND p.code IN (`+strings.Join(ph, ",")+`) AND ur.is_active=1 AND ur.scope_type='ORGANIZATION'`, args...).Scan(&n)
 	return n > 0, err
 }

@@ -42,6 +42,32 @@ func TestAccessAndRefreshTokens(t *testing.T) {
 	if rc.Type != "refresh" {
 		t.Fatalf("expected refresh token, got %s", rc.Type)
 	}
+	if rc.SessionID == "" || c.SessionID == "" {
+		t.Fatal("issued tokens must include a session ID")
+	}
+	if c.SessionID == rc.SessionID {
+		t.Fatal("independent Issue calls must create separate sessions")
+	}
+	shared := "00112233445566778899aabbccddeeff"
+	a, err := s.IssueInSession(10, 20, false, shared)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, err := s.IssueInSession(10, 20, true, shared)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ac, err := s.Access(a)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rc2, err := s.Parse(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ac.SessionID != shared || rc2.SessionID != shared {
+		t.Fatal("access and refresh tokens must share the same session ID")
+	}
 	if _, err := s.Access(refresh); err == nil {
 		t.Fatal("refresh token accepted as access token")
 	}
