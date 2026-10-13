@@ -2,7 +2,6 @@ package gatepasses
 
 import "errors"
 
-
 var (
 	ErrNotFound         = errors.New("gatepass not found")
 	ErrInvalid          = errors.New("invalid gatepass")

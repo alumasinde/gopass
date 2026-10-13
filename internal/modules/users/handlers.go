@@ -1,6 +1,7 @@
 package users
 
 import (
+	"context"
 	"database/sql"
 	"net/http"
 
@@ -8,29 +9,34 @@ import (
 	"github.com/alumasinde/gopass/internal/platform/audit"
 	"github.com/alumasinde/gopass/internal/platform/auth"
 	"github.com/alumasinde/gopass/internal/platform/httpx"
+	"github.com/alumasinde/gopass/internal/platform/ratelimit"
 	"github.com/alumasinde/gopass/internal/platform/rbac"
 	"github.com/alumasinde/gopass/internal/platform/tenancy"
 	"github.com/go-chi/chi/v5"
 )
 
 type Handler struct {
-	db      *sql.DB
-	authz   *rbac.Service
-	audit   *audit.Service
-	Service *Service
-	Auth    *auth.Service
+	db          *sql.DB
+	authz       *rbac.Service
+	audit       *audit.Service
+	Service     *Service
+	Auth        *auth.Service
+	rateLimiter *ratelimit.RateLimiter
+}
+
+func (h *Handler) IsActive(ctx context.Context, userID, orgID int64) (bool, error) {
+	return h.Service.IsActive(ctx, userID, orgID)
 }
 
 func NewHandler(db *sql.DB, a *rbac.Service, au *audit.Service) *Handler {
 	repo := NewRepository(db)
-	return &Handler{db: db, authz: a, audit: au, Service: NewService(repo, nil)}
+	return &Handler{db: db, authz: a, audit: au, Service: NewService(repo, nil), rateLimiter: ratelimit.NewRateLimiter()}
 }
 
 func NewAuthService(db *sql.DB, tokens *auth.Service) *Handler {
 	repo := NewRepository(db)
 	return &Handler{db: db, Service: NewService(repo, tokens), Auth: tokens}
 }
-
 
 func (h *Handler) registerRoutes(r chi.Router) {
 	r.Route("/users", func(r chi.Router) { r.Get("/", h.List); r.Post("/", h.Create); r.Get("/{id}", h.Get) })
@@ -40,8 +46,8 @@ func (h *Handler) registerRoutes(r chi.Router) {
 func (h *Handler) registerAuthRoutes(r chi.Router) {
 	r.Post("/auth/login", h.Login)
 	r.Post("/auth/refresh", h.Refresh)
+	r.Post("/auth/logout", h.Logout)
 }
-
 
 func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 	var in struct {
@@ -52,6 +58,13 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 	}
 	if httpx.Decode(r, &in) != nil || in.Email == "" || in.Password == "" {
 		httpx.Fail(w, apperr.InvalidRequest.With("email and password are required"))
+		return
+	}
+
+	// Rate limiting check
+	ip := r.RemoteAddr
+	if !h.rateLimiter.CheckLogin(ip, in.Email) {
+		httpx.Fail(w, apperr.TooManyRequests.With("too many login attempts, please try again later"))
 		return
 	}
 
@@ -69,6 +82,10 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 
 	user, accessToken, refreshToken, e := h.Service.Authenticate(r.Context(), org, in.Email, in.Password)
 	if e != nil {
+		h.rateLimiter.RecordLoginAttempt(ip, in.Email, false)
+		if h.audit != nil {
+			h.audit.Record(r.Context(), audit.Entry{Action: "user.login_failed", ResourceType: "user", ResourceID: 0})
+		}
 		if e == ErrUserNotFound || e == ErrInvalidPassword {
 			httpx.Fail(w, apperr.Unauthorized.With("invalid credentials"))
 		} else {
@@ -77,6 +94,7 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	h.rateLimiter.RecordLoginAttempt(ip, in.Email, true)
 	if h.audit != nil {
 		h.audit.Record(r.Context(), audit.Entry{Action: "user.login", ResourceType: "user", ResourceID: user.ID})
 	}
@@ -105,6 +123,23 @@ func (h *Handler) Refresh(w http.ResponseWriter, r *http.Request) {
 	httpx.OK(w, map[string]any{"access_token": newToken})
 }
 
+func (h *Handler) Logout(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		RefreshToken string `json:"refresh_token"`
+	}
+	if httpx.Decode(r, &in) != nil || in.RefreshToken == "" {
+		httpx.Fail(w, apperr.InvalidRequest.With("refresh_token is required"))
+		return
+	}
+
+	if e := h.Service.Logout(r.Context(), in.RefreshToken); e != nil {
+		httpx.Fail(w, apperr.Database)
+		return
+	}
+
+	httpx.OK(w, map[string]any{"message": "logged out successfully"})
+}
+
 func (h *Handler) Me(w http.ResponseWriter, r *http.Request) {
 	claims, ok := auth.From(r.Context())
 	if !ok {
@@ -130,7 +165,9 @@ func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	org, _ := tenancy.ID(r.Context())
-	users, e := h.Service.ListUsers(r.Context(), org, 100)
+	params := httpx.ParsePagination(r)
+	offset := httpx.CalculateOffset(params.Page, params.Limit)
+	users, total, e := h.Service.ListUsers(r.Context(), org, offset, params.Limit, params.Search)
 	if e != nil {
 		httpx.Fail(w, apperr.Database)
 		return
@@ -139,7 +176,7 @@ func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
 	for i, u := range users {
 		out[i] = map[string]any{"id": u.ID, "first_name": u.FirstName, "last_name": u.LastName, "email": u.Email, "is_active": u.IsActive}
 	}
-	httpx.OK(w, out)
+	httpx.Paginated(w, out, params.Page, params.Limit, total)
 }
 
 func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
@@ -147,7 +184,12 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 		httpx.Fail(w, apperr.Forbidden)
 		return
 	}
-	var in struct{ FirstName, LastName, Email, Password string }
+	var in struct {
+		FirstName string `json:"first_name"`
+		LastName  string `json:"last_name"`
+		Email     string `json:"email"`
+		Password  string `json:"password"`
+	}
 	if httpx.Decode(r, &in) != nil || in.FirstName == "" || in.LastName == "" || in.Email == "" || len(in.Password) < 12 {
 		httpx.Fail(w, apperr.InvalidRequest.With("first_name, last_name, email and password of at least 12 characters are required"))
 		return
@@ -166,7 +208,12 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
-	h.audit.Record(r.Context(), audit.Entry{Action: "user.created", ResourceType: "user", ResourceID: user.ID})
+	h.audit.Record(r.Context(), audit.Entry{
+		Action:       "user.created",
+		ResourceType: "user",
+		ResourceID:   user.ID,
+		NewValues:    map[string]any{"first_name": user.FirstName, "last_name": user.LastName, "email": user.Email, "is_active": user.IsActive},
+	})
 	httpx.Created(w, map[string]any{"id": user.ID})
 }
 

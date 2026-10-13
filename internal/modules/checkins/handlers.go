@@ -3,13 +3,14 @@ package checkins
 import (
 	"database/sql"
 	"errors"
+	"net/http"
+
 	"github.com/alumasinde/gopass/internal/platform/apperr"
 	"github.com/alumasinde/gopass/internal/platform/audit"
 	"github.com/alumasinde/gopass/internal/platform/httpx"
 	"github.com/alumasinde/gopass/internal/platform/rbac"
 	"github.com/alumasinde/gopass/internal/platform/tenancy"
 	"github.com/go-chi/chi/v5"
-	"net/http"
 )
 
 type Handler struct {
@@ -83,8 +84,10 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 		httpx.Fail(w, apperr.Conflict.With("visitor is already checked in"))
 	case errors.Is(e, ErrInvalid):
 		httpx.Fail(w, apperr.Conflict.With("credential or gatepass is not eligible for check-in"))
-	case e != nil:
+	case errors.Is(e, rbac.ErrForbidden):
 		httpx.Fail(w, apperr.Forbidden)
+	case e != nil:
+		httpx.Fail(w, apperr.Database)
 	default:
 		h.audit.Record(r.Context(), audit.Entry{Action: "check_in.created", ResourceType: "check_in", ResourceID: v.ID})
 		httpx.Created(w, v)

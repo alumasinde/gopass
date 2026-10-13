@@ -4,8 +4,10 @@ import (
 	"context"
 	"database/sql"
 	"errors"
-	"github.com/alumasinde/gopass/internal/platform/rbac"
+	"strings"
 	"time"
+
+	"github.com/alumasinde/gopass/internal/platform/rbac"
 )
 
 const (
@@ -27,7 +29,30 @@ type Service struct {
 
 func NewService(db *sql.DB, a *rbac.Service) *Service { return &Service{db, a} }
 func (s *Service) List(c context.Context, o int64) ([]Gatepass, error) {
-	rows, e := s.db.QueryContext(c, `SELECT id,organization_id,visitor_id,gate_id,pass_type_id,status,valid_from,valid_until FROM gatepasses WHERE organization_id=? ORDER BY id DESC LIMIT 200`, o)
+	// Get user's accessible gates based on their roles
+	gateIDs, err := s.getUserAccessibleGates(c, o)
+	if err != nil {
+		return nil, err
+	}
+
+	var query string
+	var args []any
+	if len(gateIDs) > 0 {
+		// Filter by accessible gates
+		placeholders := make([]string, len(gateIDs))
+		for i := range gateIDs {
+			placeholders[i] = "?"
+			args = append(args, gateIDs[i])
+		}
+		args = append(args, o)
+		query = `SELECT id,organization_id,visitor_id,gate_id,pass_type_id,status,valid_from,valid_until FROM gatepasses WHERE organization_id=? AND gate_id IN (` + strings.Join(placeholders, ",") + `) ORDER BY id DESC LIMIT 200`
+	} else {
+		// No gate-specific roles, show all in org (org-scoped users)
+		query = `SELECT id,organization_id,visitor_id,gate_id,pass_type_id,status,valid_from,valid_until FROM gatepasses WHERE organization_id=? ORDER BY id DESC LIMIT 200`
+		args = []any{o}
+	}
+
+	rows, e := s.db.QueryContext(c, query, args...)
 	if e != nil {
 		return nil, e
 	}
@@ -44,6 +69,12 @@ func (s *Service) List(c context.Context, o int64) ([]Gatepass, error) {
 		x = append(x, v)
 	}
 	return x, rows.Err()
+}
+
+func (s *Service) getUserAccessibleGates(c context.Context, orgID int64) ([]int64, error) {
+	// This would need to extract user ID from context and query their gate-scoped roles
+	// For now, return empty to allow org-wide access (can be enhanced later)
+	return []int64{}, nil
 }
 func (s *Service) Get(c context.Context, o, id int64) (*Gatepass, error) {
 	var v Gatepass
@@ -62,7 +93,12 @@ func (s *Service) Create(c context.Context, o, visitor, gate, passType int64, vf
 	if visitor < 1 || gate < 1 || passType < 1 || vf.IsZero() || vu.IsZero() || !vu.After(vf) {
 		return nil, ErrInvalid
 	}
+	// Check if visitor exists first
 	var n int
+	if e := s.db.QueryRowContext(c, `SELECT COUNT(*) FROM visitors WHERE organization_id=? AND id=?`, o, visitor).Scan(&n); e != nil || n == 0 {
+		return nil, ErrInvalid
+	}
+	// Then check if blacklisted
 	if e := s.db.QueryRowContext(c, `SELECT COUNT(*) FROM visitors WHERE organization_id=? AND id=? AND is_blacklisted=0`, o, visitor).Scan(&n); e != nil {
 		return nil, e
 	}
@@ -82,7 +118,7 @@ func (s *Service) Create(c context.Context, o, visitor, gate, passType int64, vf
 	id, _ := res.LastInsertId()
 	return s.Get(c, o, id)
 }
-func (s *Service) Submit(c context.Context, o, id int64) error {
+func (s *Service) Submit(c context.Context, o, id int64) (string, error) {
 	var gateID int64
 	if err := s.db.QueryRowContext(c, `SELECT gate_id FROM gatepasses WHERE organization_id=? AND id=?`, o, id).Scan(&gateID); errors.Is(err, sql.ErrNoRows) {
 		return ErrNotFound
@@ -125,9 +161,12 @@ func (s *Service) Submit(c context.Context, o, id int64) error {
 	}
 	if !requires {
 		if _, e = tx.ExecContext(c, `UPDATE gatepasses SET status=?,updated_at=UTC_TIMESTAMP() WHERE organization_id=? AND id=?`, StatusApproved, o, id); e != nil {
-			return e
+			return "", e
 		}
-		return tx.Commit()
+		if err = tx.Commit(); err != nil {
+			return "", err
+		}
+		return StatusApproved, nil
 	}
 	var wfID, stepID int64
 	var stepOrder int
@@ -149,12 +188,17 @@ func (s *Service) Submit(c context.Context, o, id int64) error {
 	_ = gate
 	_ = permission
 	_ = scope
-	return tx.Commit()
+	if err = tx.Commit(); err != nil {
+		return "", err
+	}
+	return StatusPendingApproval, nil
 }
 func validTransition(from, to string) bool {
 	switch from {
 	case StatusDraft:
 		return to == StatusCancelled
+	case StatusPendingApproval:
+		return to == StatusCancelled || to == StatusApproved || to == StatusRejected
 	case StatusApproved:
 		return to == StatusIssued || to == StatusCancelled || to == StatusRevoked
 	case StatusIssued:
@@ -206,6 +250,13 @@ func (s *Service) Transition(c context.Context, o, id int64, to string) error {
 			return err
 		}
 		return ErrTransition
+	}
+	// If revoking, also revoke associated credentials
+	if to == StatusRevoked {
+		_, err = tx.ExecContext(c, `UPDATE credentials SET is_revoked=1,updated_at=UTC_TIMESTAMP() WHERE organization_id=? AND gatepass_id=?`, o, id)
+		if err != nil {
+			return err
+		}
 	}
 	return tx.Commit()
 }

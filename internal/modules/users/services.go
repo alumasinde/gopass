@@ -2,8 +2,11 @@ package users
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"strings"
+	"time"
 
 	"github.com/alumasinde/gopass/internal/platform/auth"
 )
@@ -68,8 +71,8 @@ func (s *Service) GetUser(ctx context.Context, orgID, id int64) (*User, error) {
 	return user, nil
 }
 
-func (s *Service) ListUsers(ctx context.Context, orgID int64, limit int) ([]User, error) {
-	return s.repo.List(ctx, orgID, limit)
+func (s *Service) ListUsers(ctx context.Context, orgID int64, offset, limit int, search string) ([]User, int64, error) {
+	return s.repo.List(ctx, orgID, offset, limit, search)
 }
 
 func (s *Service) UpdateUser(ctx context.Context, orgID int64, user *User) error {
@@ -106,6 +109,10 @@ func (s *Service) Authenticate(ctx context.Context, orgID int64, email, password
 		return nil, "", "", err
 	}
 	if hash == "" {
+		// Timing attack prevention: always do a dummy bcrypt compare
+		// even if user doesn't exist
+		dummyHash, _ := auth.Hash("dummy-password-for-timing")
+		_ = auth.Check(dummyHash, password)
 		return nil, "", "", ErrUserNotFound
 	}
 
@@ -135,6 +142,13 @@ func (s *Service) Authenticate(ctx context.Context, orgID int64, email, password
 		return nil, "", "", err
 	}
 
+	// Store hashed refresh token
+	tokenHash := hashToken(refreshToken)
+	expiresAt := time.Now().UTC().Add(s.auth.RefreshTTL).Format(time.RFC3339)
+	if err := s.repo.StoreRefreshToken(ctx, user.ID, orgID, tokenHash, expiresAt); err != nil {
+		return nil, "", "", err
+	}
+
 	return user, accessToken, refreshToken, nil
 }
 
@@ -147,6 +161,16 @@ func (s *Service) RefreshToken(ctx context.Context, refreshToken string) (string
 		return "", errors.New("invalid refresh token")
 	}
 
+	// Check if refresh token is valid and not revoked
+	tokenHash := hashToken(refreshToken)
+	valid, err := s.repo.IsRefreshTokenValid(ctx, tokenHash)
+	if err != nil {
+		return "", err
+	}
+	if !valid {
+		return "", errors.New("invalid or revoked refresh token")
+	}
+
 	user, err := s.repo.GetByID(ctx, claims.OrgID, claims.UserID)
 	if err != nil {
 		return "", err
@@ -155,7 +179,47 @@ func (s *Service) RefreshToken(ctx context.Context, refreshToken string) (string
 		return "", ErrUserNotFound
 	}
 
-	return s.auth.Issue(claims.UserID, claims.OrgID, false)
+	// Rotate: revoke old token and issue new one
+	if err := s.repo.RevokeRefreshToken(ctx, tokenHash); err != nil {
+		return "", err
+	}
+
+	newAccessToken, err := s.auth.Issue(claims.UserID, claims.OrgID, false)
+	if err != nil {
+		return "", err
+	}
+
+	newRefreshToken, err := s.auth.Issue(claims.UserID, claims.OrgID, true)
+	if err != nil {
+		return "", err
+	}
+
+	// Store new hashed refresh token
+	newTokenHash := hashToken(newRefreshToken)
+	expiresAt := time.Now().UTC().Add(s.auth.RefreshTTL).Format(time.RFC3339)
+	if err := s.repo.StoreRefreshToken(ctx, user.ID, claims.OrgID, newTokenHash, expiresAt); err != nil {
+		return "", err
+	}
+
+	return newAccessToken, nil
+}
+
+func (s *Service) Logout(ctx context.Context, refreshToken string) error {
+	tokenHash := hashToken(refreshToken)
+	return s.repo.RevokeRefreshToken(ctx, tokenHash)
+}
+
+func (s *Service) LogoutAll(ctx context.Context, userID int64) error {
+	return s.repo.RevokeAllUserRefreshTokens(ctx, userID)
+}
+
+func hashToken(token string) string {
+	h := sha256.Sum256([]byte(token))
+	return hex.EncodeToString(h[:])
+}
+
+func (s *Service) IsActive(ctx context.Context, userID, orgID int64) (bool, error) {
+	return s.repo.IsActive(ctx, userID, orgID)
 }
 
 func isValidEmail(email string) bool {

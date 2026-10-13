@@ -3,13 +3,15 @@ package credentials
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
 	"errors"
-	"github.com/alumasinde/gopass/internal/platform/auth"
-	"github.com/alumasinde/gopass/internal/platform/rbac"
 	"strings"
 	"time"
+
+	"github.com/alumasinde/gopass/internal/platform/auth"
+	"github.com/alumasinde/gopass/internal/platform/rbac"
 )
 
 type Service struct {
@@ -26,8 +28,14 @@ func token() string {
 	h := hex.EncodeToString(b)
 	return h[:8] + "-" + h[8:12] + "-" + h[12:16] + "-" + h[16:20] + "-" + h[20:]
 }
+
+func hashToken(token string) string {
+	h := sha256.Sum256([]byte(token))
+	return hex.EncodeToString(h[:])
+}
 func (s *Service) List(c context.Context, o int64) ([]Credential, error) {
-	rows, e := s.db.QueryContext(c, `SELECT id,organization_id,gatepass_id,token,expires_at,is_revoked FROM credentials WHERE organization_id=? ORDER BY id DESC LIMIT 200`, o)
+	// Don't return token hashes in list for security
+	rows, e := s.db.QueryContext(c, `SELECT id,organization_id,gatepass_id,expires_at,is_revoked FROM credentials WHERE organization_id=? ORDER BY id DESC LIMIT 200`, o)
 	if e != nil {
 		return nil, e
 	}
@@ -36,10 +44,11 @@ func (s *Service) List(c context.Context, o int64) ([]Credential, error) {
 	for rows.Next() {
 		var v Credential
 		var t time.Time
-		if e := rows.Scan(&v.ID, &v.OrganizationID, &v.GatepassID, &v.Token, &t, &v.IsRevoked); e != nil {
+		if e := rows.Scan(&v.ID, &v.OrganizationID, &v.GatepassID, &t, &v.IsRevoked); e != nil {
 			return nil, e
 		}
 		v.ExpiresAt = t.UTC().Format(time.RFC3339)
+		v.Token = "" // Never return token in list
 		x = append(x, v)
 	}
 	return x, rows.Err()
@@ -85,7 +94,8 @@ func (s *Service) Issue(c context.Context, o, id int64) (*Credential, error) {
 		return nil, ErrUnavailable
 	}
 	tok := token()
-	res, err := tx.ExecContext(c, `INSERT INTO credentials(organization_id,gatepass_id,token,expires_at,is_revoked,created_at,updated_at) VALUES(?,?,?,?,0,UTC_TIMESTAMP(),UTC_TIMESTAMP())`, o, id, tok, exp)
+	tokHash := hashToken(tok)
+	res, err := tx.ExecContext(c, `INSERT INTO credentials(organization_id,gatepass_id,token_hash,expires_at,is_revoked,created_at,updated_at) VALUES(?,?,?,?,0,UTC_TIMESTAMP(),UTC_TIMESTAMP())`, o, id, tokHash, exp)
 	if err != nil {
 		return nil, err
 	}
@@ -103,6 +113,7 @@ func (s *Service) Issue(c context.Context, o, id int64) (*Credential, error) {
 	if err = tx.Commit(); err != nil {
 		return nil, err
 	}
+	// Only return the token once at issue time
 	return &Credential{ID: cid, OrganizationID: o, GatepassID: id, Token: tok, ExpiresAt: exp.UTC().Format(time.RFC3339)}, nil
 }
 func (s *Service) Verify(c context.Context, tokenValue string) (*Credential, error) {
@@ -115,7 +126,8 @@ func (s *Service) Verify(c context.Context, tokenValue string) (*Credential, err
 	if !ok {
 		return nil, ErrUnavailable
 	}
-	err := s.db.QueryRowContext(c, `SELECT c.id,c.organization_id,c.gatepass_id,c.token,c.expires_at,c.is_revoked,gp.gate_id,gp.valid_from,gp.valid_until FROM credentials c JOIN gatepasses gp ON gp.id=c.gatepass_id WHERE c.organization_id=? AND c.token=?`, cl.OrgID, strings.TrimSpace(tokenValue)).Scan(&v.ID, &oid, &gp, &v.Token, &exp, &revoked, &gate, &vf, &vu)
+	tokHash := hashToken(strings.TrimSpace(tokenValue))
+	err := s.db.QueryRowContext(c, `SELECT c.id,c.organization_id,c.gatepass_id,c.expires_at,c.is_revoked,gp.gate_id,gp.valid_from,gp.valid_until FROM credentials c JOIN gatepasses gp ON gp.id=c.gatepass_id WHERE c.organization_id=? AND c.token_hash=?`, cl.OrgID, tokHash).Scan(&v.ID, &oid, &gp, &exp, &revoked, &gate, &vf, &vu)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -126,6 +138,7 @@ func (s *Service) Verify(c context.Context, tokenValue string) (*Credential, err
 	v.GatepassID = gp
 	v.ExpiresAt = exp.UTC().Format(time.RFC3339)
 	v.IsRevoked = revoked
+	v.Token = "" // Never return token in verify
 	if revoked || time.Now().UTC().After(exp) || time.Now().UTC().Before(vf) || time.Now().UTC().After(vu) {
 		return nil, ErrUnavailable
 	}

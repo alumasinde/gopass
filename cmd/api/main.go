@@ -1,13 +1,17 @@
 package main
 
 import (
+	"log"
+
 	"github.com/alumasinde/gopass/internal/app"
 	"github.com/alumasinde/gopass/internal/app/config"
-	"log"
 )
 
 func main() {
-	cfg := config.Load()
+	cfg, err := config.Load()
+	if err != nil {
+		log.Fatalf("Configuration error: %v", err)
+	}
 	a, err := app.New(cfg)
 	if err != nil {
 		log.Fatal(err)

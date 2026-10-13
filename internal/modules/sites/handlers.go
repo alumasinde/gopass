@@ -3,13 +3,14 @@ package sites
 import (
 	"database/sql"
 	"errors"
+	"net/http"
+
 	"github.com/alumasinde/gopass/internal/platform/apperr"
 	"github.com/alumasinde/gopass/internal/platform/audit"
 	"github.com/alumasinde/gopass/internal/platform/httpx"
 	"github.com/alumasinde/gopass/internal/platform/rbac"
 	"github.com/alumasinde/gopass/internal/platform/tenancy"
 	"github.com/go-chi/chi/v5"
-	"net/http"
 )
 
 type Handler struct {
@@ -74,7 +75,10 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 		httpx.Fail(w, apperr.Forbidden)
 		return
 	}
-	var in struct{ Name, Code string }
+	var in struct {
+		Name string `json:"name"`
+		Code string `json:"code"`
+	}
 	if httpx.Decode(r, &in) != nil {
 		httpx.Fail(w, apperr.InvalidJSON)
 		return
@@ -103,8 +107,9 @@ func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var in struct {
-		Name, Code string
-		IsActive   bool
+		Name     string `json:"name"`
+		Code     string `json:"code"`
+		IsActive bool   `json:"is_active"`
 	}
 	if httpx.Decode(r, &in) != nil {
 		httpx.Fail(w, apperr.InvalidJSON)

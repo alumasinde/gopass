@@ -2,15 +2,16 @@ package middleware
 
 import (
 	"context"
+	"log/slog"
+	"net/http"
+	"strings"
+	"time"
+
 	"github.com/alumasinde/gopass/internal/platform/apperr"
 	"github.com/alumasinde/gopass/internal/platform/auth"
 	"github.com/alumasinde/gopass/internal/platform/httpx"
 	"github.com/alumasinde/gopass/internal/platform/tenancy"
 	"github.com/google/uuid"
-	"log/slog"
-	"net/http"
-	"strings"
-	"time"
 )
 
 type key string
@@ -95,7 +96,12 @@ type sw struct {
 }
 
 func (w *sw) WriteHeader(s int) { w.status = s; w.ResponseWriter.WriteHeader(s) }
-func Bearer(a *auth.Service) func(http.Handler) http.Handler {
+
+type UserChecker interface {
+	IsActive(ctx context.Context, userID, orgID int64) (bool, error)
+}
+
+func Bearer(a *auth.Service, checker UserChecker) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			p := strings.Fields(r.Header.Get("Authorization"))
@@ -108,6 +114,16 @@ func Bearer(a *auth.Service) func(http.Handler) http.Handler {
 				httpx.Fail(w, apperr.InvalidToken)
 				return
 			}
+
+			// Check if user is still active
+			if checker != nil {
+				active, err := checker.IsActive(r.Context(), c.UserID, c.OrgID)
+				if err != nil || !active {
+					httpx.Fail(w, apperr.Unauthorized)
+					return
+				}
+			}
+
 			ctx := auth.With(r.Context(), c)
 			ctx = tenancy.With(ctx, c.OrgID)
 			next.ServeHTTP(w, r.WithContext(ctx))

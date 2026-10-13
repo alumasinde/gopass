@@ -3,13 +3,14 @@ package approvals
 import (
 	"database/sql"
 	"errors"
+	"net/http"
+
 	"github.com/alumasinde/gopass/internal/platform/apperr"
 	"github.com/alumasinde/gopass/internal/platform/audit"
 	"github.com/alumasinde/gopass/internal/platform/httpx"
 	"github.com/alumasinde/gopass/internal/platform/rbac"
 	"github.com/alumasinde/gopass/internal/platform/tenancy"
 	"github.com/go-chi/chi/v5"
-	"net/http"
 )
 
 type Handler struct {
@@ -53,18 +54,16 @@ func (h *Handler) Get(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	o, _ := tenancy.ID(r.Context())
-	items, e := h.service.List(r.Context(), o)
+	v, e := h.service.Get(r.Context(), o, id)
+	if errors.Is(e, ErrNotFound) {
+		httpx.Fail(w, apperr.NotFound)
+		return
+	}
 	if e != nil {
 		httpx.Fail(w, apperr.Database)
 		return
 	}
-	for _, v := range items {
-		if v.ID == id {
-			httpx.OK(w, v)
-			return
-		}
-	}
-	httpx.Fail(w, apperr.NotFound)
+	httpx.OK(w, v)
 }
 func (h *Handler) Approve(w http.ResponseWriter, r *http.Request) { h.act(w, r, true) }
 func (h *Handler) Reject(w http.ResponseWriter, r *http.Request) {

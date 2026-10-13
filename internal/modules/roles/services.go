@@ -127,6 +127,9 @@ func (s *Service) AssignPermission(ctx context.Context, orgID, roleID, permissio
 	if role == nil {
 		return ErrRoleNotFound
 	}
+	if role.IsSystem {
+		return ErrSystemRoleImmutable
+	}
 	return s.repo.AssignPermission(ctx, orgID, roleID, permissionID)
 }
 
@@ -137,6 +140,9 @@ func (s *Service) RemovePermission(ctx context.Context, orgID, roleID, permissio
 	}
 	if role == nil {
 		return ErrRoleNotFound
+	}
+	if role.IsSystem {
+		return ErrSystemRoleImmutable
 	}
 	return s.repo.RemovePermission(ctx, orgID, roleID, permissionID)
 }
@@ -150,6 +156,18 @@ func (s *Service) GetRolePermissions(ctx context.Context, orgID, roleID int64) (
 		return nil, ErrRoleNotFound
 	}
 	return s.repo.GetPermissions(ctx, orgID, roleID)
+}
+
+func (s *Service) GetPermissionCode(ctx context.Context, orgID, permissionID int64) (string, error) {
+	return s.repo.GetPermissionCode(ctx, orgID, permissionID)
+}
+
+func (s *Service) GetSiteOrganization(ctx context.Context, siteID int64) (int64, error) {
+	return s.repo.GetSiteOrganization(ctx, siteID)
+}
+
+func (s *Service) GetGateOrganization(ctx context.Context, gateID int64) (int64, error) {
+	return s.repo.GetGateOrganization(ctx, gateID)
 }
 
 func (s *Service) AssignRoleToUser(ctx context.Context, orgID, userID, roleID int64, scopeType string, siteID, gateID *int64) error {

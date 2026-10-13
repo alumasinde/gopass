@@ -60,7 +60,10 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 		httpx.Fail(w, apperr.Forbidden)
 		return
 	}
-	var in struct{ Name, Code string }
+	var in struct {
+		Name string `json:"name"`
+		Code string `json:"code"`
+	}
 	if httpx.Decode(r, &in) != nil {
 		httpx.Fail(w, apperr.InvalidJSON)
 		return
@@ -91,15 +94,37 @@ func (h *Handler) AssignPermission(w http.ResponseWriter, r *http.Request) {
 		httpx.Fail(w, apperr.InvalidID)
 		return
 	}
-	var in struct{ PermissionID int64 }
+	var in struct {
+		PermissionID int64 `json:"permission_id"`
+	}
 	if httpx.Decode(r, &in) != nil || in.PermissionID < 1 {
 		httpx.Fail(w, apperr.InvalidRequest.With("permission_id is required"))
 		return
 	}
 	org, _ := tenancy.ID(r.Context())
+
+	// Get the permission code to check if granter holds it
+	permCode, e := h.service.GetPermissionCode(r.Context(), org, in.PermissionID)
+	if e != nil {
+		httpx.Fail(w, apperr.Database)
+		return
+	}
+	if permCode == "" {
+		httpx.Fail(w, apperr.NotFound.With("permission not found"))
+		return
+	}
+
+	// Granter must hold the permission they're assigning
+	if h.authz.Require(r.Context(), permCode) != nil {
+		httpx.Fail(w, apperr.Forbidden.With("you must hold the permission you are assigning"))
+		return
+	}
+
 	if e := h.service.AssignPermission(r.Context(), org, rid, in.PermissionID); e != nil {
 		if e == ErrRoleNotFound {
 			httpx.Fail(w, apperr.NotFound.With("role not found"))
+		} else if e == ErrSystemRoleImmutable {
+			httpx.Fail(w, apperr.Forbidden.With("system roles cannot be modified"))
 		} else {
 			httpx.Fail(w, apperr.Database)
 		}
@@ -127,6 +152,8 @@ func (h *Handler) RemovePermission(w http.ResponseWriter, r *http.Request) {
 	if e := h.service.RemovePermission(r.Context(), org, rid, pid); e != nil {
 		if e == ErrRoleNotFound {
 			httpx.Fail(w, apperr.NotFound.With("role not found"))
+		} else if e == ErrSystemRoleImmutable {
+			httpx.Fail(w, apperr.Forbidden.With("system roles cannot be modified"))
 		} else {
 			httpx.Fail(w, apperr.Database)
 		}
@@ -168,15 +195,64 @@ func (h *Handler) AssignRole(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var in struct {
-		UserID, RoleID int64
-		ScopeType      string
-		SiteID, GateID *int64
+		UserID    int64  `json:"user_id"`
+		RoleID    int64  `json:"role_id"`
+		ScopeType string `json:"scope_type"`
+		SiteID    *int64 `json:"site_id"`
+		GateID    *int64 `json:"gate_id"`
 	}
 	if httpx.Decode(r, &in) != nil || in.UserID < 1 || in.RoleID < 1 {
 		httpx.Fail(w, apperr.InvalidRequest.With("user_id and role_id are required"))
 		return
 	}
 	org, _ := tenancy.ID(r.Context())
+
+	// Get role details to check if it's a system role
+	role, e := h.service.GetRole(r.Context(), org, in.RoleID)
+	if e != nil {
+		httpx.Fail(w, apperr.Database)
+		return
+	}
+	if role == nil {
+		httpx.Fail(w, apperr.NotFound.With("role not found"))
+		return
+	}
+	if role.IsSystem {
+		httpx.Fail(w, apperr.Forbidden.With("system roles cannot be assigned"))
+		return
+	}
+
+	// Get all permissions for the role being assigned
+	rolePerms, e := h.service.GetRolePermissions(r.Context(), org, in.RoleID)
+	if e != nil {
+		httpx.Fail(w, apperr.Database)
+		return
+	}
+
+	// Assigner must hold all permissions they're granting
+	for _, perm := range rolePerms {
+		if h.authz.Require(r.Context(), perm.Code) != nil {
+			httpx.Fail(w, apperr.Forbidden.With("you must hold all permissions in the role you are assigning"))
+			return
+		}
+	}
+
+	// Verify user, site, and gate belong to the same org
+	if in.SiteID != nil {
+		siteOrg, e := h.service.GetSiteOrganization(r.Context(), *in.SiteID)
+		if e != nil || siteOrg != org {
+			httpx.Fail(w, apperr.InvalidRequest.With("site does not belong to this organization"))
+			return
+		}
+	}
+	if in.GateID != nil {
+		gateOrg, e := h.service.GetGateOrganization(r.Context(), *in.GateID)
+		if e != nil || gateOrg != org {
+			httpx.Fail(w, apperr.InvalidRequest.With("gate does not belong to this organization"))
+			return
+		}
+	}
+
 	if e := h.service.AssignRoleToUser(r.Context(), org, in.UserID, in.RoleID, in.ScopeType, in.SiteID, in.GateID); e != nil {
 		if e == ErrRoleNotFound {
 			httpx.Fail(w, apperr.NotFound.With("role not found"))
@@ -196,7 +272,8 @@ func (h *Handler) RemoveRole(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var in struct {
-		UserID, RoleID int64
+		UserID int64 `json:"user_id"`
+		RoleID int64 `json:"role_id"`
 	}
 	if httpx.Decode(r, &in) != nil || in.UserID < 1 || in.RoleID < 1 {
 		httpx.Fail(w, apperr.InvalidRequest.With("user_id and role_id are required"))

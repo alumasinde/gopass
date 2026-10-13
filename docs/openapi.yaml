@@ -2,7 +2,7 @@ openapi: 3.0.3
 info:
   title: GoPass API
   version: 1.0.0
-  description: Multi-tenant gatepass and visitor management API.
+  description: Multi-tenant gatepass and visitor management API with RBAC, approvals, and credential management.
 servers:
   - url: /api/v1
 security:
@@ -17,74 +17,1210 @@ paths:
         content:
           application/json:
             schema:
-              {
-                type: object,
-                required: [email, password],
-                properties:
-                  {
-                    email: { type: string, format: email },
-                    password: { type: string, format: password },
-                  },
-              }
+              type: object
+              required: [email, password]
+              properties:
+                email:
+                  type: string
+                  format: email
+                  example: user@example.com
+                password:
+                  type: string
+                  format: password
+                  example: securepassword123
+                organization_id:
+                  type: integer
+                  example: 1
+                organization_slug:
+                  type: string
+                  example: acme-corp
       responses:
-        {
-          "200": { description: Authenticated },
-          "401": { description: Invalid credentials },
-        }
+        '200':
+          description: Authentication successful
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      user:
+                        type: object
+                        properties:
+                          id:
+                            type: integer
+                          first_name:
+                            type: string
+                          last_name:
+                            type: string
+                          email:
+                            type: string
+                      access_token:
+                        type: string
+                      refresh_token:
+                        type: string
+        '401':
+          description: Invalid credentials
+        '429':
+          description: Too many login attempts
   /auth/refresh:
     post:
       security: []
       summary: Refresh an access token
-      responses: { "200": { description: New access token } }
-  /me:
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [refresh_token]
+              properties:
+                refresh_token:
+                  type: string
+      responses:
+        '200':
+          description: New access token issued
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      access_token:
+                        type: string
+        '401':
+          description: Invalid or expired refresh token
+  /auth/logout:
+    post:
+      security: []
+      summary: Logout user (revoke refresh token)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [refresh_token]
+              properties:
+                refresh_token:
+                  type: string
+      responses:
+        '200':
+          description: Logout successful
+        '401':
+          description: Invalid refresh token
+  /auth/me:
     get:
-      summary: Current user
-      responses: { "200": { description: Current user } }
+      summary: Get current user
+      responses:
+        '200':
+          description: Current user details
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      id:
+                        type: integer
+                      organization_id:
+                        type: integer
+                      first_name:
+                        type: string
+                      last_name:
+                        type: string
+                      email:
+                        type: string
+                      is_active:
+                        type: boolean
+  /users:
+    get:
+      summary: List users with pagination
+      parameters:
+        - name: page
+          in: query
+          schema:
+            type: integer
+            default: 1
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 100
+            maximum: 1000
+        - name: search
+          in: query
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Paginated user list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          type: object
+                          properties:
+                            id:
+                              type: integer
+                            first_name:
+                              type: string
+                            last_name:
+                              type: string
+                            email:
+                              type: string
+                            is_active:
+                              type: boolean
+                      page:
+                        type: integer
+                      limit:
+                        type: integer
+                      total:
+                        type: integer
+                      total_pages:
+                        type: integer
+        '403':
+          description: Forbidden
+    post:
+      summary: Create a new user
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [first_name, last_name, email, password]
+              properties:
+                first_name:
+                  type: string
+                last_name:
+                  type: string
+                email:
+                  type: string
+                  format: email
+                password:
+                  type: string
+                  format: password
+                  minLength: 12
+      responses:
+        '201':
+          description: User created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      id:
+                        type: integer
+        '403':
+          description: Forbidden
+        '409':
+          description: User already exists
+  /users/{id}:
+    get:
+      summary: Get user by ID
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: User details
+        '403':
+          description: Forbidden
+        '404':
+          description: User not found
+  /organizations:
+    get:
+      summary: List organizations
+      responses:
+        '200':
+          description: Organization list
+        '403':
+          description: Forbidden
+    post:
+      summary: Create organization
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, slug]
+              properties:
+                name:
+                  type: string
+                slug:
+                  type: string
+      responses:
+        '201':
+          description: Organization created
+        '403':
+          description: Forbidden
+  /organizations/{id}:
+    get:
+      summary: Get organization by ID
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Organization details
+        '404':
+          description: Not found
+  /roles:
+    get:
+      summary: List roles
+      responses:
+        '200':
+          description: Role list
+        '403':
+          description: Forbidden
+    post:
+      summary: Create a new role
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, code]
+              properties:
+                name:
+                  type: string
+                code:
+                  type: string
+      responses:
+        '201':
+          description: Role created
+        '403':
+          description: Forbidden
+        '409':
+          description: Role already exists
+  /roles/{id}:
+    get:
+      summary: Get role by ID
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Role details
+        '404':
+          description: Not found
+  /roles/{id}/permissions:
+    get:
+      summary: Get role permissions
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Permission list
+        '403':
+          description: Forbidden
+        '404':
+          description: Role not found
+    post:
+      summary: Assign permission to role
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [permission_id]
+              properties:
+                permission_id:
+                  type: integer
+      responses:
+        '200':
+          description: Permission assigned
+        '403':
+          description: Forbidden (system role or missing permission)
+        '404':
+          description: Role not found
+  /roles/{id}/permissions/{permission_id}:
+    delete:
+      summary: Remove permission from role
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+        - name: permission_id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Permission removed
+        '403':
+          description: Forbidden (system role)
+        '404':
+          description: Role not found
+  /roles/assign:
+    post:
+      summary: Assign role to user
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [user_id, role_id]
+              properties:
+                user_id:
+                  type: integer
+                role_id:
+                  type: integer
+                scope_type:
+                  type: string
+                  enum: [ORGANIZATION, SITE, GATE]
+                site_id:
+                  type: integer
+                gate_id:
+                  type: integer
+      responses:
+        '200':
+          description: Role assigned
+        '403':
+          description: Forbidden (system role or missing permissions)
+        '404':
+          description: Role not found
+  /roles/assign:
+    delete:
+      summary: Remove role from user
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [user_id, role_id]
+              properties:
+                user_id:
+                  type: integer
+                role_id:
+                  type: integer
+      responses:
+        '200':
+          description: Role removed
+        '404':
+          description: Role not found
+  /roles/user/{user_id}:
+    get:
+      summary: Get user roles
+      parameters:
+        - name: user_id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: User roles list
+        '403':
+          description: Forbidden
+  /sites:
+    get:
+      summary: List sites
+      responses:
+        '200':
+          description: Site list
+        '403':
+          description: Forbidden
+    post:
+      summary: Create site
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, code]
+              properties:
+                name:
+                  type: string
+                code:
+                  type: string
+      responses:
+        '201':
+          description: Site created
+        '403':
+          description: Forbidden
+        '409':
+          description: Site code already exists
+  /sites/{id}:
+    get:
+      summary: Get site by ID
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Site details
+        '404':
+          description: Not found
+    put:
+      summary: Update site
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+                code:
+                  type: string
+                is_active:
+                  type: boolean
+      responses:
+        '200':
+          description: Site updated
+        '403':
+          description: Forbidden
+        '404':
+          description: Not found
+    delete:
+      summary: Delete site
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Site deleted
+        '403':
+          description: Forbidden
+        '404':
+          description: Not found
+  /gates:
+    get:
+      summary: List gates
+      responses:
+        '200':
+          description: Gate list
+        '403':
+          description: Forbidden
+    post:
+      summary: Create gate
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, code, site_id]
+              properties:
+                name:
+                  type: string
+                code:
+                  type: string
+                site_id:
+                  type: integer
+      responses:
+        '201':
+          description: Gate created
+        '403':
+          description: Forbidden
+  /gates/{id}:
+    get:
+      summary: Get gate by ID
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Gate details
+        '404':
+          description: Not found
+    put:
+      summary: Update gate
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+                code:
+                  type: string
+                is_active:
+                  type: boolean
+      responses:
+        '200':
+          description: Gate updated
+        '403':
+          description: Forbidden
+        '404':
+          description: Not found
+    delete:
+      summary: Delete gate
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Gate deleted
+        '403':
+          description: Forbidden
+        '404':
+          description: Not found
   /visitors:
     get:
-      {
-        summary: List visitors,
-        responses:
-          {
-            "200": { description: Visitor list },
-            "403": { description: Forbidden },
-          },
-      }
+      summary: List visitors
+      responses:
+        '200':
+          description: Visitor list
+        '403':
+          description: Forbidden
     post:
-      {
-        summary: Register visitor,
-        responses:
-          {
-            "201": { description: Created },
-            "403": { description: Forbidden },
-          },
-      }
+      summary: Register visitor
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [first_name, last_name]
+              properties:
+                first_name:
+                  type: string
+                last_name:
+                  type: string
+                phone:
+                  type: string
+                email:
+                  type: string
+                  format: email
+      responses:
+        '201':
+          description: Visitor created
+        '403':
+          description: Forbidden
+  /visitors/{id}:
+    get:
+      summary: Get visitor by ID
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Visitor details
+        '404':
+          description: Not found
+    put:
+      summary: Update visitor
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                first_name:
+                  type: string
+                last_name:
+                  type: string
+                phone:
+                  type: string
+                email:
+                  type: string
+                  format: email
+      responses:
+        '200':
+          description: Visitor updated
+        '403':
+          description: Forbidden
+        '404':
+          description: Not found
+  /visitors/{id}/blacklist:
+    post:
+      summary: Blacklist visitor
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Visitor blacklisted
+        '403':
+          description: Forbidden
+        '404':
+          description: Not found
+  /visitors/{id}/unblacklist:
+    post:
+      summary: Unblacklist visitor
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Visitor unblacklisted
+        '403':
+          description: Forbidden
+        '404':
+          description: Not found
   /gatepasses:
     get:
-      {
-        summary: List gatepasses,
-        responses: { "200": { description: Gatepass list } },
-      }
+      summary: List gatepasses
+      responses:
+        '200':
+          description: Gatepass list
+        '403':
+          description: Forbidden
     post:
-      {
-        summary: Create gatepass,
-        responses: { "201": { description: Created } },
-      }
+      summary: Create gatepass
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [visitor_id, gate_id, pass_type_id, valid_from, valid_until]
+              properties:
+                visitor_id:
+                  type: integer
+                gate_id:
+                  type: integer
+                pass_type_id:
+                  type: integer
+                valid_from:
+                  type: string
+                  format: date-time
+                valid_until:
+                  type: string
+                  format: date-time
+      responses:
+        '201':
+          description: Gatepass created
+        '403':
+          description: Forbidden
+        '409':
+          description: Visitor blacklisted
+  /gatepasses/{id}:
+    get:
+      summary: Get gatepass by ID
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Gatepass details
+        '404':
+          description: Not found
+  /gatepasses/{id}/submit:
+    post:
+      summary: Submit gatepass for approval
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Gatepass submitted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      id:
+                        type: integer
+                      status:
+                        type: string
+                        enum: [PENDING_APPROVAL, APPROVED]
+        '403':
+          description: Forbidden
+        '404':
+          description: Not found
+        '409':
+          description: Invalid state transition or visitor blacklisted
+  /gatepasses/{id}/cancel:
+    post:
+      summary: Cancel gatepass
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Gatepass cancelled
+        '403':
+          description: Forbidden
+        '404':
+          description: Not found
+        '409':
+          description: Invalid state transition
+  /gatepasses/{id}/revoke:
+    post:
+      summary: Revoke gatepass
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Gatepass revoked
+        '403':
+          description: Forbidden
+        '404':
+          description: Not found
+        '409':
+          description: Invalid state transition
+  /approvals:
+    get:
+      summary: List approval requests
+      responses:
+        '200':
+          description: Approval list
+        '403':
+          description: Forbidden
+  /approvals/{id}:
+    get:
+      summary: Get approval request by ID
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Approval details
+        '404':
+          description: Not found
+  /approvals/{id}/approve:
+    post:
+      summary: Approve gatepass
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                note:
+                  type: string
+      responses:
+        '200':
+          description: Approved
+        '403':
+          description: Forbidden (creator cannot approve own pass)
+        '404':
+          description: Not found
+        '409':
+          description: Already acted on
+  /approvals/{id}/reject:
+    post:
+      summary: Reject gatepass
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                note:
+                  type: string
+      responses:
+        '200':
+          description: Rejected
+        '403':
+          description: Forbidden
+        '404':
+          description: Not found
+        '409':
+          description: Already acted on or invalid state
+  /credentials:
+    get:
+      summary: List credentials (tokens not returned)
+      responses:
+        '200':
+          description: Credential list
+        '403':
+          description: Forbidden
+    post:
+      summary: Issue credential for gatepass
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [gatepass_id]
+              properties:
+                gatepass_id:
+                  type: integer
+      responses:
+        '201':
+          description: Credential issued (token returned once)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      id:
+                        type: integer
+                      token:
+                        type: string
+                      expires_at:
+                        type: string
+                        format: date-time
+        '403':
+          description: Forbidden
+        '404':
+          description: Gatepass not found
+        '409':
+          description: Gatepass not eligible
+  /credentials/verify:
+    post:
+      summary: Verify credential token
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [token]
+              properties:
+                token:
+                  type: string
+      responses:
+        '200':
+          description: Credential valid
+        '403':
+          description: Forbidden
+        '409':
+          description: Credential invalid or unavailable
+  /credentials/{id}:
+    get:
+      summary: Get credential by ID
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Credential details (token not returned)
+        '404':
+          description: Not found
+  /credentials/{id}/revoke:
+    post:
+      summary: Revoke credential
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Credential revoked
+        '404':
+          description: Not found
   /check-ins:
+    get:
+      summary: List check-ins
+      responses:
+        '200':
+          description: Check-in list
+        '403':
+          description: Forbidden
     post:
-      {
-        summary: Check a visitor in,
-        responses: { "201": { description: Created } },
-      }
+      summary: Check visitor in
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [credential_token, gate_id]
+              properties:
+                credential_token:
+                  type: string
+                gate_id:
+                  type: integer
+      responses:
+        '201':
+          description: Checked in
+        '403':
+          description: Forbidden
+        '404':
+          description: Credential not found
+        '409':
+          description: Already checked in or credential invalid
+  /check-ins/{id}:
+    get:
+      summary: Get check-in by ID
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Check-in details
+        '404':
+          description: Not found
   /check-outs:
+    get:
+      summary: List check-outs
+      responses:
+        '200':
+          description: Check-out list
+        '403':
+          description: Forbidden
     post:
-      {
-        summary: Check a visitor out,
-        responses: { "201": { description: Created } },
-      }
+      summary: Check visitor out
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [credential_token, gate_id]
+              properties:
+                credential_token:
+                  type: string
+                gate_id:
+                  type: integer
+      responses:
+        '201':
+          description: Checked out
+        '403':
+          description: Forbidden
+        '404':
+          description: Credential not found
+        '409':
+          description: Not checked in or credential invalid
+  /check-outs/{id}:
+    get:
+      summary: Get check-out by ID
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Check-out details
+        '404':
+          description: Not found
+  /pass-types:
+    get:
+      summary: List pass types
+      responses:
+        '200':
+          description: Pass type list
+        '403':
+          description: Forbidden
+    post:
+      summary: Create pass type
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, code, validity_minutes]
+              properties:
+                name:
+                  type: string
+                code:
+                  type: string
+                requires_approval:
+                  type: boolean
+                  default: true
+                validity_minutes:
+                  type: integer
+                  default: 480
+      responses:
+        '201':
+          description: Pass type created
+        '403':
+          description: Forbidden
+        '409':
+          description: Pass type already exists
+  /pass-types/{id}:
+    get:
+      summary: Get pass type by ID
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Pass type details
+        '404':
+          description: Not found
+    put:
+      summary: Update pass type
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+                code:
+                  type: string
+                requires_approval:
+                  type: boolean
+                validity_minutes:
+                  type: integer
+                is_active:
+                  type: boolean
+      responses:
+        '200':
+          description: Pass type updated
+        '403':
+          description: Forbidden
+        '404':
+          description: Not found
+    delete:
+      summary: Delete pass type
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Pass type deleted
+        '403':
+          description: Forbidden
+        '404':
+          description: Not found
 components:
   securitySchemes:
     bearerAuth:
       type: http
       scheme: bearer
       bearerFormat: JWT
+  schemas:
+    Error:
+      type: object
+      properties:
+        error:
+          type: object
+          properties:
+            code:
+              type: string
+            message:
+              type: string

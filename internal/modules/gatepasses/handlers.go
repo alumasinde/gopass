@@ -3,14 +3,15 @@ package gatepasses
 import (
 	"database/sql"
 	"errors"
+	"net/http"
+	"time"
+
 	"github.com/alumasinde/gopass/internal/platform/apperr"
 	"github.com/alumasinde/gopass/internal/platform/audit"
 	"github.com/alumasinde/gopass/internal/platform/httpx"
 	"github.com/alumasinde/gopass/internal/platform/rbac"
 	"github.com/alumasinde/gopass/internal/platform/tenancy"
 	"github.com/go-chi/chi/v5"
-	"net/http"
-	"time"
 )
 
 type Handler struct {
@@ -73,10 +74,11 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var in struct {
-		VisitorID             int64 `json:"visitor_id"`
-		GateID                int64 `json:"gate_id"`
-		PassTypeID            int64 `json:"pass_type_id"`
-		ValidFrom, ValidUntil string
+		VisitorID  int64  `json:"visitor_id"`
+		GateID     int64  `json:"gate_id"`
+		PassTypeID int64  `json:"pass_type_id"`
+		ValidFrom  string `json:"valid_from"`
+		ValidUntil string `json:"valid_until"`
 	}
 	if httpx.Decode(r, &in) != nil {
 		httpx.Fail(w, apperr.InvalidJSON)
@@ -124,7 +126,7 @@ func (h *Handler) Submit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	o, _ := tenancy.ID(r.Context())
-	e = h.service.Submit(r.Context(), o, id)
+	status, e := h.service.Submit(r.Context(), o, id)
 	switch {
 	case errors.Is(e, ErrNotFound):
 		httpx.Fail(w, apperr.NotFound)
@@ -142,7 +144,7 @@ func (h *Handler) Submit(w http.ResponseWriter, r *http.Request) {
 		httpx.Fail(w, apperr.Database)
 	default:
 		h.audit.Record(r.Context(), audit.Entry{Action: "gatepass.submitted", ResourceType: "gatepass", ResourceID: id})
-		httpx.OK(w, map[string]any{"id": id, "status": "PENDING_APPROVAL_OR_APPROVED"})
+		httpx.OK(w, map[string]any{"id": id, "status": status})
 	}
 }
 func (h *Handler) Cancel(w http.ResponseWriter, r *http.Request) {

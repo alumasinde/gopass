@@ -35,18 +35,19 @@ func (e *Error) Is(target error) bool {
 
 // The error catalogue. Add new errors here and nowhere else.
 var (
-	InvalidRequest = &Error{http.StatusBadRequest, "invalid_request", "invalid request"}
-	InvalidJSON    = &Error{http.StatusBadRequest, "invalid_request", "invalid JSON"}
-	InvalidID      = &Error{http.StatusBadRequest, "invalid_id", "invalid id"}
-	Unauthorized   = &Error{http.StatusUnauthorized, "unauthorized", "authentication required"}
-	InvalidToken   = &Error{http.StatusUnauthorized, "invalid_token", "invalid or expired access token"}
-	Forbidden      = &Error{http.StatusForbidden, "forbidden", "permission denied"}
-	NotFound       = &Error{http.StatusNotFound, "not_found", "resource not found"}
-	Conflict       = &Error{http.StatusConflict, "conflict", "resource could not be saved"}
-	CreateFailed   = &Error{http.StatusConflict, "conflict", "resource could not be created"}
-	Database       = &Error{http.StatusInternalServerError, "database_error", "database error"}
-	TenantMissing  = &Error{http.StatusInternalServerError, "tenant_missing", "organization context missing"}
-	Internal       = &Error{http.StatusInternalServerError, "internal_error", "internal server error"}
+	InvalidRequest  = &Error{http.StatusBadRequest, "invalid_request", "invalid request"}
+	InvalidJSON     = &Error{http.StatusBadRequest, "invalid_request", "invalid JSON"}
+	InvalidID       = &Error{http.StatusBadRequest, "invalid_id", "invalid id"}
+	Unauthorized    = &Error{http.StatusUnauthorized, "unauthorized", "authentication required"}
+	InvalidToken    = &Error{http.StatusUnauthorized, "invalid_token", "invalid or expired access token"}
+	Forbidden       = &Error{http.StatusForbidden, "forbidden", "permission denied"}
+	NotFound        = &Error{http.StatusNotFound, "not_found", "resource not found"}
+	Conflict        = &Error{http.StatusConflict, "conflict", "resource could not be saved"}
+	CreateFailed    = &Error{http.StatusConflict, "conflict", "resource could not be created"}
+	TooManyRequests = &Error{http.StatusTooManyRequests, "too_many_requests", "too many requests"}
+	Database        = &Error{http.StatusInternalServerError, "database_error", "database error"}
+	TenantMissing   = &Error{http.StatusInternalServerError, "tenant_missing", "organization context missing"}
+	Internal        = &Error{http.StatusInternalServerError, "internal_error", "internal server error"}
 )
 
 // From converts any error into an *Error. Unknown errors become Internal so

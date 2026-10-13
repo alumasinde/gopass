@@ -3,13 +3,14 @@ package visitors
 import (
 	"database/sql"
 	"errors"
+	"net/http"
+
 	"github.com/alumasinde/gopass/internal/platform/apperr"
 	"github.com/alumasinde/gopass/internal/platform/audit"
 	"github.com/alumasinde/gopass/internal/platform/httpx"
 	"github.com/alumasinde/gopass/internal/platform/rbac"
 	"github.com/alumasinde/gopass/internal/platform/tenancy"
 	"github.com/go-chi/chi/v5"
-	"net/http"
 )
 
 type Handler struct {
@@ -71,7 +72,12 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 		httpx.Fail(w, apperr.Forbidden)
 		return
 	}
-	var in struct{ FirstName, LastName, Phone, Email string }
+	var in struct {
+		FirstName string `json:"first_name"`
+		LastName  string `json:"last_name"`
+		Phone     string `json:"phone"`
+		Email     string `json:"email"`
+	}
 	if httpx.Decode(r, &in) != nil {
 		httpx.Fail(w, apperr.InvalidJSON)
 		return
@@ -99,7 +105,12 @@ func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
 		httpx.Fail(w, apperr.InvalidID)
 		return
 	}
-	var in struct{ FirstName, LastName, Phone, Email string }
+	var in struct {
+		FirstName string `json:"first_name"`
+		LastName  string `json:"last_name"`
+		Phone     string `json:"phone"`
+		Email     string `json:"email"`
+	}
 	if httpx.Decode(r, &in) != nil {
 		httpx.Fail(w, apperr.InvalidJSON)
 		return

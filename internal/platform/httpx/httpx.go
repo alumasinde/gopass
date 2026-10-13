@@ -8,6 +8,8 @@ import (
 	"github.com/alumasinde/gopass/internal/platform/apperr"
 )
 
+const maxBodySize = 1 << 20 // 1MB
+
 func JSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
@@ -26,7 +28,12 @@ func Fail(w http.ResponseWriter, err error) {
 	Error(w, e.Status, e.Code, e.Message)
 }
 
-func Decode(r *http.Request, v any) error  { return json.NewDecoder(r.Body).Decode(v) }
+func Decode(r *http.Request, v any) error {
+	r.Body = http.MaxBytesReader(nil, r.Body, maxBodySize)
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+	return dec.Decode(v)
+}
 func ID(s string) (int64, error)           { return strconv.ParseInt(s, 10, 64) }
 func OK(w http.ResponseWriter, v any)      { JSON(w, http.StatusOK, map[string]any{"data": v}) }
 func Created(w http.ResponseWriter, v any) { JSON(w, http.StatusCreated, map[string]any{"data": v}) }

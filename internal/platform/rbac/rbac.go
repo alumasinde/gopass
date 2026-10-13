@@ -65,8 +65,20 @@ func (s *Service) CanWithScope(ctx context.Context, code, scopeType string, reso
 		err = s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM user_roles ur JOIN role_permissions rp ON rp.role_id=ur.role_id JOIN permissions p ON p.id=rp.permission_id WHERE ur.user_id=? AND ur.organization_id=? AND p.code=? AND ur.is_active=1 AND (ur.scope_type='ORGANIZATION' OR (ur.scope_type='SITE' AND ur.site_id=?))`, c.UserID, org, code, resourceID).Scan(&n)
 		return n > 0, err
 	case ScopeGate:
+		// Resolve gate to site for SITE-scoped users
+		var siteID int64
+		err = s.DB.QueryRowContext(ctx, `SELECT site_id FROM gates WHERE id=? AND organization_id=?`, resourceID, org).Scan(&siteID)
+		if err != nil && err != sql.ErrNoRows {
+			return false, err
+		}
 		var n int
-		err = s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM user_roles ur JOIN role_permissions rp ON rp.role_id=ur.role_id JOIN permissions p ON p.id=rp.permission_id WHERE ur.user_id=? AND ur.organization_id=? AND p.code=? AND ur.is_active=1 AND (ur.scope_type='ORGANIZATION' OR (ur.scope_type='GATE' AND ur.gate_id=?))`, c.UserID, org, code, resourceID).Scan(&n)
+		if siteID > 0 {
+			// Check for ORGANIZATION, GATE with exact match, or SITE that matches the gate's site
+			err = s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM user_roles ur JOIN role_permissions rp ON rp.role_id=ur.role_id JOIN permissions p ON p.id=rp.permission_id WHERE ur.user_id=? AND ur.organization_id=? AND p.code=? AND ur.is_active=1 AND (ur.scope_type='ORGANIZATION' OR (ur.scope_type='GATE' AND ur.gate_id=?) OR (ur.scope_type='SITE' AND ur.site_id=?))`, c.UserID, org, code, resourceID, siteID).Scan(&n)
+		} else {
+			// Fallback if gate not found (shouldn't happen normally)
+			err = s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM user_roles ur JOIN role_permissions rp ON rp.role_id=ur.role_id JOIN permissions p ON p.id=rp.permission_id WHERE ur.user_id=? AND ur.organization_id=? AND p.code=? AND ur.is_active=1 AND (ur.scope_type='ORGANIZATION' OR (ur.scope_type='GATE' AND ur.gate_id=?))`, c.UserID, org, code, resourceID).Scan(&n)
+		}
 		return n > 0, err
 	case ScopeOwn:
 		var n int

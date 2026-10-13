@@ -18,6 +18,9 @@ type Repository interface {
 	AssignPermission(ctx context.Context, orgID, roleID, permissionID int64) error
 	RemovePermission(ctx context.Context, orgID, roleID, permissionID int64) error
 	GetPermissions(ctx context.Context, orgID, roleID int64) ([]Permission, error)
+	GetPermissionCode(ctx context.Context, orgID, permissionID int64) (string, error)
+	GetSiteOrganization(ctx context.Context, siteID int64) (int64, error)
+	GetGateOrganization(ctx context.Context, gateID int64) (int64, error)
 	AssignToUser(ctx context.Context, orgID, userID, roleID int64, scopeType string, siteID, gateID *int64) error
 	RemoveFromUser(ctx context.Context, orgID, userID, roleID int64) error
 	GetUserRoles(ctx context.Context, orgID, userID int64) ([]UserRole, error)
@@ -133,6 +136,45 @@ func (r *repository) GetPermissions(ctx context.Context, orgID, roleID int64) ([
 		perms = append(perms, perm)
 	}
 	return perms, nil
+}
+
+func (r *repository) GetPermissionCode(ctx context.Context, orgID, permissionID int64) (string, error) {
+	var code string
+	query := `SELECT code FROM permissions WHERE id=?`
+	err := r.db.QueryRowContext(ctx, query, permissionID).Scan(&code)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return "", nil
+		}
+		return "", err
+	}
+	return code, nil
+}
+
+func (r *repository) GetSiteOrganization(ctx context.Context, siteID int64) (int64, error) {
+	var orgID int64
+	query := `SELECT organization_id FROM sites WHERE id=?`
+	err := r.db.QueryRowContext(ctx, query, siteID).Scan(&orgID)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return 0, nil
+		}
+		return 0, err
+	}
+	return orgID, nil
+}
+
+func (r *repository) GetGateOrganization(ctx context.Context, gateID int64) (int64, error) {
+	var orgID int64
+	query := `SELECT organization_id FROM gates WHERE id=?`
+	err := r.db.QueryRowContext(ctx, query, gateID).Scan(&orgID)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return 0, nil
+		}
+		return 0, err
+	}
+	return orgID, nil
 }
 
 func (r *repository) AssignToUser(ctx context.Context, orgID, userID, roleID int64, scopeType string, siteID, gateID *int64) error {

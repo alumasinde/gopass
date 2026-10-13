@@ -26,7 +26,7 @@ func RegisterAPI(r chi.Router, d Dependencies) {
 		d.Auth.RegisterAuthRoutes(r)
 
 		r.Group(func(r chi.Router) {
-			r.Use(middleware.Bearer(d.Auth.Auth))
+			r.Use(middleware.Bearer(d.Auth.Auth, d.Auth.Service))
 			d.Auth.RegisterMeRoute(r) // protected: /auth/me
 			d.Users.RegisterRoutes(r)
 			d.Organizations.RegisterRoutes(r)

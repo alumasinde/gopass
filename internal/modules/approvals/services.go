@@ -4,11 +4,10 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+
 	"github.com/alumasinde/gopass/internal/platform/auth"
 	"github.com/alumasinde/gopass/internal/platform/rbac"
 )
-
-
 
 type Service struct {
 	db    *sql.DB
@@ -32,6 +31,19 @@ func (s *Service) List(c context.Context, o int64) ([]ApprovalRequest, error) {
 	}
 	return x, rows.Err()
 }
+
+func (s *Service) Get(c context.Context, o, id int64) (*ApprovalRequest, error) {
+	var v ApprovalRequest
+	query := `SELECT id,organization_id,gatepass_id,status,step_order,acted_by FROM approval_requests WHERE organization_id=? AND id=?`
+	err := s.db.QueryRowContext(c, query, o, id).Scan(&v.ID, &v.OrganizationID, &v.GatepassID, &v.Status, &v.StepOrder, &v.ActedBy)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &v, nil
+}
 func (s *Service) Act(c context.Context, o, id int64, approve bool, note string) error {
 	claims, ok := auth.From(c)
 	if !ok {
@@ -42,10 +54,10 @@ func (s *Service) Act(c context.Context, o, id int64, approve bool, note string)
 		return e
 	}
 	defer tx.Rollback()
-	var gpID, gateID, stepID, wfID int64
+	var gpID, gateID, stepID, wfID, createdBy int64
 	var status, permission, scope string
 	var order int
-	e = tx.QueryRowContext(c, `SELECT ar.gatepass_id,ar.status,ar.step_order,ar.step_id,ar.workflow_id,gp.gate_id,COALESCE(aws.permission_code,''),COALESCE(aws.scope_type,'ORGANIZATION') FROM approval_requests ar JOIN gatepasses gp ON gp.id=ar.gatepass_id LEFT JOIN approval_workflow_steps aws ON aws.id=ar.step_id WHERE ar.organization_id=? AND ar.id=? FOR UPDATE`, o, id).Scan(&gpID, &status, &order, &stepID, &wfID, &gateID, &permission, &scope)
+	e = tx.QueryRowContext(c, `SELECT ar.gatepass_id,ar.status,ar.step_order,ar.step_id,ar.workflow_id,gp.gate_id,gp.created_by,COALESCE(aws.permission_code,''),COALESCE(aws.scope_type,'ORGANIZATION') FROM approval_requests ar JOIN gatepasses gp ON gp.id=ar.gatepass_id LEFT JOIN approval_workflow_steps aws ON aws.id=ar.step_id WHERE ar.organization_id=? AND ar.id=? FOR UPDATE`, o, id).Scan(&gpID, &status, &order, &stepID, &wfID, &gateID, &createdBy, &permission, &scope)
 	if errors.Is(e, sql.ErrNoRows) {
 		return ErrNotFound
 	}
@@ -54,6 +66,10 @@ func (s *Service) Act(c context.Context, o, id int64, approve bool, note string)
 	}
 	if status != "PENDING" {
 		return ErrAlreadyActed
+	}
+	// Separation of duties: creator cannot approve their own pass
+	if approve && createdBy == claims.UserID {
+		return ErrForbidden
 	}
 	if permission == "" {
 		permission = "approvals.approve"
@@ -89,6 +105,14 @@ func (s *Service) Act(c context.Context, o, id int64, approve bool, note string)
 			_ = nextScope
 		}
 	} else {
+		// Only allow rejection if gatepass is in PENDING_APPROVAL state
+		var gpStatus string
+		if err := tx.QueryRowContext(c, `SELECT status FROM gatepasses WHERE organization_id=? AND id=?`, o, gpID).Scan(&gpStatus); err != nil {
+			return err
+		}
+		if gpStatus != "PENDING_APPROVAL" {
+			return ErrAlreadyActed
+		}
 		if _, e = tx.ExecContext(c, `UPDATE approval_requests SET status='REJECTED',acted_by=?,acted_at=UTC_TIMESTAMP(),decision_note=?,updated_at=UTC_TIMESTAMP() WHERE organization_id=? AND id=?`, claims.UserID, note, o, id); e != nil {
 			return e
 		}
