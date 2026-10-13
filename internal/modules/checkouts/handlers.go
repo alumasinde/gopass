@@ -19,7 +19,7 @@ type Handler struct {
 }
 
 func NewHandler(db *sql.DB, a *rbac.Service, au *audit.Service) *Handler {
-	return &Handler{a, au, NewService(db, a)}
+	return &Handler{a, au, NewService(db, a, au)}
 }
 func (h *Handler) registerRoutes(r chi.Router) {
 	r.Route("/check-outs", func(r chi.Router) { r.Get("/", h.List); r.Post("/", h.Create); r.Get("/{id}", h.Get) })
@@ -80,7 +80,6 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 	case e != nil:
 		httpx.Fail(w, apperr.Forbidden)
 	default:
-		h.audit.Record(r.Context(), audit.Entry{Action: "check_out.created", ResourceType: "check_out", ResourceID: v.ID})
 		httpx.Created(w, v)
 	}
 }

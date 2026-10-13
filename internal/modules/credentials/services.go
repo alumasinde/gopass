@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/alumasinde/gopass/internal/platform/audit"
 	"github.com/alumasinde/gopass/internal/platform/auth"
 	"github.com/alumasinde/gopass/internal/platform/rbac"
 )
@@ -17,9 +18,16 @@ import (
 type Service struct {
 	db    *sql.DB
 	authz *rbac.Service
+	audit *audit.Service
 }
 
-func NewService(db *sql.DB, a *rbac.Service) *Service { return &Service{db, a} }
+func NewService(db *sql.DB, a *rbac.Service, audits ...*audit.Service) *Service {
+	var au *audit.Service
+	if len(audits) > 0 {
+		au = audits[0]
+	}
+	return &Service{db: db, authz: a, audit: au}
+}
 func token() string {
 	b := make([]byte, 16)
 	if _, e := rand.Read(b); e != nil {
@@ -110,6 +118,14 @@ func (s *Service) Issue(c context.Context, o, id int64) (*Credential, error) {
 	if n, _ := res.RowsAffected(); n != 1 {
 		return nil, ErrUnavailable
 	}
+	if s.audit != nil {
+		if err = s.audit.RecordTx(c, tx, audit.Entry{OrganizationID: o, Action: "credential.issued", ResourceType: "credential", ResourceID: cid, NewValues: map[string]any{"gatepass_id": id, "expires_at": exp.UTC(), "is_revoked": false}}); err != nil {
+			return nil, err
+		}
+		if err = s.audit.RecordTx(c, tx, audit.Entry{OrganizationID: o, Action: "gatepass.issued", ResourceType: "gatepass", ResourceID: id, OldValues: map[string]any{"status": "APPROVED"}, NewValues: map[string]any{"status": "ISSUED"}}); err != nil {
+			return nil, err
+		}
+	}
 	if err = tx.Commit(); err != nil {
 		return nil, err
 	}
@@ -156,24 +172,40 @@ func (s *Service) Verify(c context.Context, tokenValue string) (*Credential, err
 	return &v, nil
 }
 func (s *Service) Revoke(c context.Context, o, id int64) error {
-	var gateID int64
-	err := s.db.QueryRowContext(c, `SELECT gp.gate_id FROM credentials cr JOIN gatepasses gp ON gp.id=cr.gatepass_id AND gp.organization_id=cr.organization_id WHERE cr.organization_id=? AND cr.id=? AND cr.is_revoked=0`, o, id).Scan(&gateID)
+	tx, err := s.db.BeginTx(c, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var gateID, gatepassID int64
+	var revoked bool
+	err = tx.QueryRowContext(c, `SELECT gp.gate_id,cr.gatepass_id,cr.is_revoked FROM credentials cr JOIN gatepasses gp ON gp.id=cr.gatepass_id AND gp.organization_id=cr.organization_id WHERE cr.organization_id=? AND cr.id=? FOR UPDATE`, o, id).Scan(&gateID, &gatepassID, &revoked)
 	if errors.Is(err, sql.ErrNoRows) {
 		return ErrNotFound
 	}
 	if err != nil {
 		return err
 	}
-	if err := s.authz.RequireWithScope(c, "credentials.revoke", rbac.ScopeGate, gateID); err != nil {
-		return err
-	}
-	res, e := s.db.ExecContext(c, `UPDATE credentials SET is_revoked=1,updated_at=UTC_TIMESTAMP() WHERE organization_id=? AND id=? AND is_revoked=0`, o, id)
-	if e != nil {
-		return e
-	}
-	n, _ := res.RowsAffected()
-	if n == 0 {
+	if revoked {
 		return ErrNotFound
 	}
-	return nil
+	if err = s.authz.RequireWithScope(c, "credentials.revoke", rbac.ScopeGate, gateID); err != nil {
+		return err
+	}
+	res, err := tx.ExecContext(c, `UPDATE credentials SET is_revoked=1,updated_at=UTC_TIMESTAMP() WHERE organization_id=? AND id=? AND is_revoked=0`, o, id)
+	if err != nil {
+		return err
+	}
+	if n, e := res.RowsAffected(); e != nil || n != 1 {
+		if e != nil {
+			return e
+		}
+		return ErrNotFound
+	}
+	if s.audit != nil {
+		if err = s.audit.RecordTx(c, tx, audit.Entry{OrganizationID: o, Action: "credential.revoked", ResourceType: "credential", ResourceID: id, OldValues: map[string]any{"is_revoked": false}, NewValues: map[string]any{"is_revoked": true, "gatepass_id": gatepassID}}); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
 }

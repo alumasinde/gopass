@@ -8,6 +8,7 @@ import (
 	"errors"
 	"time"
 
+	"github.com/alumasinde/gopass/internal/platform/audit"
 	"github.com/alumasinde/gopass/internal/platform/auth"
 	"github.com/alumasinde/gopass/internal/platform/rbac"
 )
@@ -15,9 +16,16 @@ import (
 type Service struct {
 	db    *sql.DB
 	authz *rbac.Service
+	audit *audit.Service
 }
 
-func NewService(db *sql.DB, a *rbac.Service) *Service { return &Service{db, a} }
+func NewService(db *sql.DB, a *rbac.Service, audits ...*audit.Service) *Service {
+	var au *audit.Service
+	if len(audits) > 0 {
+		au = audits[0]
+	}
+	return &Service{db: db, authz: a, audit: au}
+}
 
 func hashToken(token string) string {
 	h := sha256.Sum256([]byte(token))
@@ -105,10 +113,21 @@ func (s *Service) Create(c context.Context, o int64, token string, gate int64) (
 	if n, _ := res2.RowsAffected(); n != 1 {
 		return nil, ErrInvalid
 	}
+	id, err := res.LastInsertId()
+	if err != nil {
+		return nil, err
+	}
+	if s.audit != nil {
+		if err = s.audit.RecordTx(c, tx, audit.Entry{OrganizationID: o, Action: "check_in.created", ResourceType: "check_in", ResourceID: id, NewValues: map[string]any{"gatepass_id": gpID, "gate_id": gate, "checked_in_by": cl.UserID, "status": "CHECKED_IN"}}); err != nil {
+			return nil, err
+		}
+		if err = s.audit.RecordTx(c, tx, audit.Entry{OrganizationID: o, Action: "gatepass.checked_in", ResourceType: "gatepass", ResourceID: gpID, OldValues: map[string]any{"status": "ISSUED"}, NewValues: map[string]any{"status": "CHECKED_IN"}}); err != nil {
+			return nil, err
+		}
+	}
 	if err = tx.Commit(); err != nil {
 		return nil, err
 	}
-	id, _ := res.LastInsertId()
 	nowStr := now.Format(time.RFC3339)
 	return &CheckIn{ID: id, OrganizationID: o, GatepassID: gpID, GateID: gate, CheckedInBy: &cl.UserID, CheckedInAt: nowStr}, nil
 }

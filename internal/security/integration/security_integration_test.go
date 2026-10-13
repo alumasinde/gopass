@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -91,13 +92,13 @@ func newHarness(t *testing.T) *harness {
 		t.Fatalf("connect to test MySQL: %v", err)
 	}
 	var applied int
-	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM schema_migrations WHERE version >= 7`).Scan(&applied); err != nil {
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM schema_migrations WHERE version >= 8`).Scan(&applied); err != nil {
 		db.Close()
-		t.Fatalf("cannot read schema_migrations; apply migrations 0001-0007 to the dedicated test database first: %v", err)
+		t.Fatalf("cannot read schema_migrations; apply migrations 0001-0008 to the dedicated test database first: %v", err)
 	}
 	if applied == 0 {
 		db.Close()
-		t.Fatalf("migration 0007_revocable_sessions.sql is not recorded; run go run ./cmd/migrate up against the dedicated test database first")
+		t.Fatalf("migration 0008_workflow_integrity.sql is not recorded; run go run ./cmd/migrate up against the dedicated test database first")
 	}
 
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
@@ -561,4 +562,152 @@ func assertAuditEvent(t *testing.T, db *sql.DB, orgID, actorID int64, action str
 	if n == 0 {
 		t.Fatalf("expected persistent audit event %q with organization, actor, and resource attribution for org=%d actor=%d", action, orgID, actorID)
 	}
+}
+
+// TestDatabaseEnforcesTenantConsistentForeignKeys proves that database constraints
+// reject cross-organization references even if application validation is bypassed.
+func TestDatabaseEnforcesTenantConsistentForeignKeys(t *testing.T) {
+	h := newHarness(t)
+	orgA := h.createOrg("fk-a")
+	orgB := h.createOrg("fk-b")
+	siteB := h.createSite(orgB.id, "FK-B")
+	gateB := h.createGate(orgB.id, siteB, "FK-GATE-B")
+	visitorA := h.createVisitor(orgA.id, "fk-a")
+	passTypeA := h.createPassType(orgA.id, "fk-a")
+
+	_, err := h.db.Exec(`INSERT INTO gatepasses(organization_id,visitor_id,gate_id,pass_type_id,status,valid_from,valid_until,created_at,updated_at) VALUES(?,?,?,?, 'DRAFT',DATE_SUB(UTC_TIMESTAMP(),INTERVAL 1 HOUR),DATE_ADD(UTC_TIMESTAMP(),INTERVAL 1 DAY),UTC_TIMESTAMP(),UTC_TIMESTAMP())`, orgA.id, visitorA, gateB, passTypeA)
+	if err == nil {
+		t.Fatal("database accepted gatepass whose gate belongs to another organization")
+	}
+}
+
+// TestDatabaseUniquenessPreventsDuplicateCheckInAndCheckOut verifies the database
+// remains the final guard against duplicate operational records under concurrency.
+func TestDatabaseUniquenessPreventsDuplicateCheckInAndCheckOut(t *testing.T) {
+	h := newHarness(t)
+	org := h.createOrg("unique-checks")
+	site := h.createSite(org.id, "UNIQUE-SITE")
+	gate := h.createGate(org.id, site, "UNIQUE-GATE")
+	visitor := h.createVisitor(org.id, "unique-checks")
+	passType := h.createPassType(org.id, "unique-checks")
+	gp := h.createGatepass(org.id, visitor, gate, passType)
+
+	assertOneConcurrentInsert := func(label, query string) {
+		t.Helper()
+		start := make(chan struct{})
+		errs := make(chan error, 2)
+		var wg sync.WaitGroup
+		for i := 0; i < 2; i++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				<-start
+				_, err := h.db.Exec(query, org.id, gp, gate)
+				errs <- err
+			}()
+		}
+		close(start)
+		wg.Wait()
+		close(errs)
+		successes := 0
+		for err := range errs {
+			if err == nil {
+				successes++
+			}
+		}
+		if successes != 1 {
+			t.Fatalf("%s concurrent inserts: successes=%d, want exactly one", label, successes)
+		}
+	}
+	assertOneConcurrentInsert("check-in", `INSERT INTO check_ins(organization_id,gatepass_id,gate_id,checked_in_at) VALUES(?,?,?,UTC_TIMESTAMP())`)
+	assertOneConcurrentInsert("check-out", `INSERT INTO check_outs(organization_id,gatepass_id,gate_id,checked_out_at) VALUES(?,?,?,UTC_TIMESTAMP())`)
+}
+
+// TestDatabaseAllowsOnlyOneActiveCredentialAndPendingApproval verifies the
+// generated-column unique constraints used as concurrency-safe invariant guards.
+func TestDatabaseAllowsOnlyOneActiveCredentialAndPendingApproval(t *testing.T) {
+	h := newHarness(t)
+	org := h.createOrg("unique-active")
+	site := h.createSite(org.id, "ACTIVE-SITE")
+	gate := h.createGate(org.id, site, "ACTIVE-GATE")
+	visitor := h.createVisitor(org.id, "unique-active")
+	passType := h.createPassType(org.id, "unique-active")
+	gp := h.createGatepass(org.id, visitor, gate, passType)
+
+	if _, err := h.db.Exec(`INSERT INTO credentials(organization_id,gatepass_id,token_hash,expires_at,is_revoked,created_at,updated_at) VALUES(?,?,?,DATE_ADD(UTC_TIMESTAMP(),INTERVAL 1 DAY),0,UTC_TIMESTAMP(),UTC_TIMESTAMP())`, org.id, gp, "hash-one"); err != nil {
+		t.Fatalf("insert first active credential: %v", err)
+	}
+	if _, err := h.db.Exec(`INSERT INTO credentials(organization_id,gatepass_id,token_hash,expires_at,is_revoked,created_at,updated_at) VALUES(?,?,?,DATE_ADD(UTC_TIMESTAMP(),INTERVAL 1 DAY),0,UTC_TIMESTAMP(),UTC_TIMESTAMP())`, org.id, gp, "hash-two"); err == nil {
+		t.Fatal("database accepted two active credentials for one gatepass")
+	}
+
+	if _, err := h.db.Exec(`INSERT INTO approval_requests(organization_id,gatepass_id,status,step_order,created_at,updated_at) VALUES(?,?,'PENDING',1,UTC_TIMESTAMP(),UTC_TIMESTAMP())`, org.id, gp); err != nil {
+		t.Fatalf("insert first pending approval: %v", err)
+	}
+	if _, err := h.db.Exec(`INSERT INTO approval_requests(organization_id,gatepass_id,status,step_order,created_at,updated_at) VALUES(?,?,'PENDING',2,UTC_TIMESTAMP(),UTC_TIMESTAMP())`, org.id, gp); err == nil {
+		t.Fatal("database accepted two pending approval requests for one gatepass")
+	}
+}
+
+func TestGatepassLifecyclePersistsTransactionalAudit(t *testing.T) {
+	h := newHarness(t)
+	org := h.createOrg("workflow-audit")
+	site := h.createSite(org.id, "WF-AUDIT-SITE")
+	gate := h.createGate(org.id, site, "WF-AUDIT-GATE")
+	visitor := h.createVisitor(org.id, "workflow-audit")
+	passType := h.createPassType(org.id, "workflow-audit")
+	user := h.createUser(org.id, "workflow-audit@example.test")
+	role := h.createRole(org.id, "workflow-audit-role", "gatepasses.create", "gatepasses.submit", "gatepasses.cancel", "gatepasses.view")
+	h.assignRole(org.id, user.id, role, "ORGANIZATION", nil, nil)
+	tokens := h.login(user, org.id)
+
+	from := time.Now().UTC().Add(-time.Minute).Format(time.RFC3339)
+	until := time.Now().UTC().Add(24 * time.Hour).Format(time.RFC3339)
+	created := h.request(http.MethodPost, "/api/v1/gatepasses", tokens.AccessToken, map[string]any{
+		"visitor_id": visitor, "gate_id": gate, "pass_type_id": passType, "valid_from": from, "valid_until": until,
+	})
+	if created.Code != http.StatusCreated {
+		t.Fatalf("create gatepass: status=%d body=%s", created.Code, created.Body.String())
+	}
+	var envelope struct {
+		Data struct {
+			ID     int64  `json:"id"`
+			Status string `json:"status"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(created.Body.Bytes(), &envelope); err != nil {
+		t.Fatalf("decode created gatepass: %v", err)
+	}
+	gpID := envelope.Data.ID
+	if gpID < 1 || envelope.Data.Status != "DRAFT" {
+		t.Fatalf("unexpected created gatepass: %+v", envelope.Data)
+	}
+	assertAuditEvent(t, h.db, org.id, user.id, "gatepass.created")
+
+	submitted := h.request(http.MethodPost, fmt.Sprintf("/api/v1/gatepasses/%d/submit", gpID), tokens.AccessToken, nil)
+	if submitted.Code != http.StatusOK {
+		t.Fatalf("submit gatepass: status=%d body=%s", submitted.Code, submitted.Body.String())
+	}
+	var status string
+	if err := h.db.QueryRow(`SELECT status FROM gatepasses WHERE organization_id=? AND id=?`, org.id, gpID).Scan(&status); err != nil {
+		t.Fatal(err)
+	}
+	if status != "APPROVED" {
+		t.Fatalf("status after submit=%q, want APPROVED", status)
+	}
+	assertAuditEvent(t, h.db, org.id, user.id, "gatepass.submitted")
+	assertAuditPayload(t, h.db, org.id, user.id, "gatepass.submitted", true, true)
+
+	cancelled := h.request(http.MethodPost, fmt.Sprintf("/api/v1/gatepasses/%d/cancel", gpID), tokens.AccessToken, nil)
+	if cancelled.Code != http.StatusOK {
+		t.Fatalf("cancel gatepass: status=%d body=%s", cancelled.Code, cancelled.Body.String())
+	}
+	if err := h.db.QueryRow(`SELECT status FROM gatepasses WHERE organization_id=? AND id=?`, org.id, gpID).Scan(&status); err != nil {
+		t.Fatal(err)
+	}
+	if status != "CANCELLED" {
+		t.Fatalf("status after cancel=%q, want CANCELLED", status)
+	}
+	assertAuditEvent(t, h.db, org.id, user.id, "gatepass.cancelled")
+	assertAuditPayload(t, h.db, org.id, user.id, "gatepass.cancelled", true, true)
 }

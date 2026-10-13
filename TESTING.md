@@ -42,6 +42,7 @@ The unit suite does not replace integration tests against a dedicated MySQL test
 6. Disabling a user or organization invalidates active sessions.
 7. Role/permission changes and authentication/session events create expected audit records with the correct organization and actor.
 8. Concurrent check-in/check-out/approval requests do not create duplicate records or skip valid workflow transitions.
+9. Migration `0008_workflow_integrity.sql` adds tenant-consistent composite foreign keys and database uniqueness guards; investigate and repair existing cross-tenant references or duplicate active records if it refuses to apply.
 
 Example dedicated test DSN (never use a production DSN):
 
@@ -69,7 +70,7 @@ go run ./cmd/migrate status
 go run ./cmd/migrate up
 ```
 
-The test harness checks that migration `0007_revocable_sessions.sql` is recorded before it runs. Existing migration files are not modified by this test suite.
+The test harness checks that migration `0008_workflow_integrity.sql` is recorded before it runs. Existing migration files are not modified by this test suite.
 
 ### 2. Run integration security tests
 
@@ -109,5 +110,7 @@ Remove-Item Env:DB_DSN -ErrorAction SilentlyContinue
 - Logout revokes the refresh-token session and the previously issued access token is immediately rejected by the protected API.
 - Refresh-token rotation returns a new access/refresh pair; replaying the old refresh token is rejected and the replacement remains usable.
 - Role assignment/removal and permission assignment/removal produce persistent `audit_logs` rows attributed to the organization and actor.
+- Database constraints reject cross-organization foreign-key references, duplicate check-in/check-out rows, multiple active credentials per gatepass, and multiple pending approval requests per gatepass.
+- Gatepass create/submit/cancel transitions produce transactional audit rows with old/new state snapshots.
 
 These tests use real MySQL rows and the actual route/middleware/handler stack. They complement the fast unit tests; do not replace them.

@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/alumasinde/gopass/internal/platform/audit"
 	"github.com/alumasinde/gopass/internal/platform/auth"
 	"github.com/alumasinde/gopass/internal/platform/rbac"
 )
@@ -26,9 +27,16 @@ const (
 type Service struct {
 	db    *sql.DB
 	authz *rbac.Service
+	audit *audit.Service
 }
 
-func NewService(db *sql.DB, a *rbac.Service) *Service { return &Service{db, a} }
+func NewService(db *sql.DB, a *rbac.Service, audits ...*audit.Service) *Service {
+	var au *audit.Service
+	if len(audits) > 0 {
+		au = audits[0]
+	}
+	return &Service{db: db, authz: a, audit: au}
+}
 
 func (s *Service) List(c context.Context, o int64) ([]Gatepass, error) {
 	all, gateIDs, err := s.accessibleGates(c, o)
@@ -146,29 +154,61 @@ func (s *Service) Create(c context.Context, o, visitor, gate, passType int64, vf
 	if visitor < 1 || gate < 1 || passType < 1 || vf.IsZero() || vu.IsZero() || !vu.After(vf) {
 		return nil, ErrInvalid
 	}
-	// Check if visitor exists first
-	var n int
-	if e := s.db.QueryRowContext(c, `SELECT COUNT(*) FROM visitors WHERE organization_id=? AND id=?`, o, visitor).Scan(&n); e != nil || n == 0 {
+	tx, err := s.db.BeginTx(c, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+
+	// Lock and validate all referenced records inside the same transaction.
+	var blacklisted bool
+	if err = tx.QueryRowContext(c, `SELECT is_blacklisted FROM visitors WHERE organization_id=? AND id=? FOR UPDATE`, o, visitor).Scan(&blacklisted); errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrInvalid
+	} else if err != nil {
+		return nil, err
 	}
-	// Then check if blacklisted
-	if e := s.db.QueryRowContext(c, `SELECT COUNT(*) FROM visitors WHERE organization_id=? AND id=? AND is_blacklisted=0`, o, visitor).Scan(&n); e != nil {
-		return nil, e
-	}
-	if n == 0 {
+	if blacklisted {
 		return nil, ErrBlacklisted
 	}
-	if e := s.db.QueryRowContext(c, `SELECT COUNT(*) FROM gates WHERE organization_id=? AND id=? AND is_active=1`, o, gate).Scan(&n); e != nil || n == 0 {
+	var active bool
+	if err = tx.QueryRowContext(c, `SELECT is_active FROM gates WHERE organization_id=? AND id=? FOR UPDATE`, o, gate).Scan(&active); errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrInvalid
+	} else if err != nil {
+		return nil, err
+	}
+	if !active {
 		return nil, ErrInvalid
 	}
-	if e := s.db.QueryRowContext(c, `SELECT COUNT(*) FROM pass_types WHERE organization_id=? AND id=? AND is_active=1`, o, passType).Scan(&n); e != nil || n == 0 {
+	if err = tx.QueryRowContext(c, `SELECT is_active FROM pass_types WHERE organization_id=? AND id=? FOR UPDATE`, o, passType).Scan(&active); errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrInvalid
+	} else if err != nil {
+		return nil, err
+	}
+	if !active {
 		return nil, ErrInvalid
 	}
-	res, e := s.db.ExecContext(c, `INSERT INTO gatepasses(organization_id,visitor_id,gate_id,pass_type_id,status,valid_from,valid_until,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)`, o, visitor, gate, passType, StatusDraft, vf, vu, time.Now().UTC(), time.Now().UTC())
-	if e != nil {
-		return nil, e
+
+	var creator any
+	if claims, ok := auth.From(c); ok && claims.UserID > 0 {
+		creator = claims.UserID
 	}
-	id, _ := res.LastInsertId()
+	now := time.Now().UTC()
+	res, err := tx.ExecContext(c, `INSERT INTO gatepasses(organization_id,visitor_id,gate_id,pass_type_id,created_by,status,valid_from,valid_until,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?)`, o, visitor, gate, passType, creator, StatusDraft, vf.UTC(), vu.UTC(), now, now)
+	if err != nil {
+		return nil, err
+	}
+	id, err := res.LastInsertId()
+	if err != nil {
+		return nil, err
+	}
+	if s.audit != nil {
+		if err = s.audit.RecordTx(c, tx, audit.Entry{OrganizationID: o, Action: "gatepass.created", ResourceType: "gatepass", ResourceID: id, NewValues: map[string]any{"status": StatusDraft, "visitor_id": visitor, "gate_id": gate, "pass_type_id": passType, "valid_from": vf.UTC(), "valid_until": vu.UTC()}}); err != nil {
+			return nil, err
+		}
+	}
+	if err = tx.Commit(); err != nil {
+		return nil, err
+	}
 	return s.Get(c, o, id)
 }
 func (s *Service) Submit(c context.Context, o, id int64) (string, error) {
@@ -246,6 +286,11 @@ func (s *Service) Submit(c context.Context, o, id int64) (string, error) {
 	} else if n != 1 {
 		return "", ErrTransition
 	}
+	if s.audit != nil {
+		if err = s.audit.RecordTx(c, tx, audit.Entry{OrganizationID: o, Action: "gatepass.submitted", ResourceType: "gatepass", ResourceID: id, OldValues: map[string]any{"status": StatusDraft}, NewValues: map[string]any{"status": next}}); err != nil {
+			return "", err
+		}
+	}
 	if err = tx.Commit(); err != nil {
 		return "", err
 	}
@@ -315,6 +360,15 @@ func (s *Service) Transition(c context.Context, o, id int64, to string) error {
 	if to == StatusRevoked {
 		_, err = tx.ExecContext(c, `UPDATE credentials SET is_revoked=1,updated_at=UTC_TIMESTAMP() WHERE organization_id=? AND gatepass_id=?`, o, id)
 		if err != nil {
+			return err
+		}
+	}
+	if s.audit != nil {
+		action := "gatepass.cancelled"
+		if to == StatusRevoked {
+			action = "gatepass.revoked"
+		}
+		if err = s.audit.RecordTx(c, tx, audit.Entry{OrganizationID: o, Action: action, ResourceType: "gatepass", ResourceID: id, OldValues: map[string]any{"status": from}, NewValues: map[string]any{"status": to}}); err != nil {
 			return err
 		}
 	}

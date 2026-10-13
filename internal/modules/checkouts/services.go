@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"github.com/alumasinde/gopass/internal/platform/audit"
 	"github.com/alumasinde/gopass/internal/platform/auth"
 	"github.com/alumasinde/gopass/internal/platform/rbac"
 	"time"
@@ -12,9 +13,16 @@ import (
 type Service struct {
 	db    *sql.DB
 	authz *rbac.Service
+	audit *audit.Service
 }
 
-func NewService(db *sql.DB, a *rbac.Service) *Service { return &Service{db, a} }
+func NewService(db *sql.DB, a *rbac.Service, audits ...*audit.Service) *Service {
+	var au *audit.Service
+	if len(audits) > 0 {
+		au = audits[0]
+	}
+	return &Service{db: db, authz: a, audit: au}
+}
 func (s *Service) List(c context.Context, o int64) ([]CheckOut, error) {
 	rows, e := s.db.QueryContext(c, `SELECT id,organization_id,gatepass_id,gate_id,checked_out_by,checked_out_at FROM check_outs WHERE organization_id=? ORDER BY id DESC LIMIT 200`, o)
 	if e != nil {
@@ -76,10 +84,21 @@ func (s *Service) Create(c context.Context, o int64, gp, gate int64) (*CheckOut,
 	if n, _ := res2.RowsAffected(); n != 1 {
 		return nil, ErrInvalid
 	}
+	id, err := res.LastInsertId()
+	if err != nil {
+		return nil, err
+	}
+	if s.audit != nil {
+		if err = s.audit.RecordTx(c, tx, audit.Entry{OrganizationID: o, Action: "check_out.created", ResourceType: "check_out", ResourceID: id, NewValues: map[string]any{"gatepass_id": gp, "gate_id": gate, "checked_out_by": cl.UserID, "status": "CHECKED_OUT"}}); err != nil {
+			return nil, err
+		}
+		if err = s.audit.RecordTx(c, tx, audit.Entry{OrganizationID: o, Action: "gatepass.checked_out", ResourceType: "gatepass", ResourceID: gp, OldValues: map[string]any{"status": "CHECKED_IN"}, NewValues: map[string]any{"status": "CHECKED_OUT"}}); err != nil {
+			return nil, err
+		}
+	}
 	if err = tx.Commit(); err != nil {
 		return nil, err
 	}
-	id, _ := res.LastInsertId()
 	now := time.Now().UTC().Format(time.RFC3339)
 	return &CheckOut{ID: id, OrganizationID: o, GatepassID: gp, GateID: gate, CheckedOutBy: &cl.UserID, CheckedOutAt: now}, nil
 }

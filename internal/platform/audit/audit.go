@@ -4,9 +4,11 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
+	"log/slog"
+
 	"github.com/alumasinde/gopass/internal/platform/auth"
 	"github.com/alumasinde/gopass/internal/platform/tenancy"
-	"log/slog"
 )
 
 type Entry struct {
@@ -16,44 +18,79 @@ type Entry struct {
 	ResourceID           int64
 	OldValues, NewValues any
 }
+
 type Service struct {
 	DB  *sql.DB
 	Log *slog.Logger
 }
 
-func New(db *sql.DB, l *slog.Logger) *Service { return &Service{db, l} }
+func New(db *sql.DB, l *slog.Logger) *Service { return &Service{DB: db, Log: l} }
+
+// RecordTx writes an audit event using the caller's transaction. A failed audit
+// insert is returned to the caller so the business change can be rolled back.
+func (s *Service) RecordTx(ctx context.Context, tx *sql.Tx, e Entry) error {
+	if tx == nil {
+		return errors.New("audit transaction is nil")
+	}
+	org, actor, old, nw, err := values(ctx, e)
+	if err != nil {
+		return err
+	}
+	_, err = tx.ExecContext(ctx, `INSERT INTO audit_logs(organization_id,actor_user_id,action,resource_type,resource_id,old_values,new_values,created_at) VALUES(?,?,?,?,?,?,?,UTC_TIMESTAMP())`, org, actor, e.Action, e.ResourceType, nullableID(e.ResourceID), old, nw)
+	return err
+}
+
+// Record is for events that are not part of a database state change. Workflow
+// mutations must use RecordTx instead.
 func (s *Service) Record(ctx context.Context, e Entry) {
+	org, actor, old, nw, err := values(ctx, e)
+	if err != nil {
+		s.logError(ctx, "audit values encode failed", err, e.Action)
+		return
+	}
+	if _, err := s.DB.ExecContext(ctx, `INSERT INTO audit_logs(organization_id,actor_user_id,action,resource_type,resource_id,old_values,new_values,created_at) VALUES(?,?,?,?,?,?,?,UTC_TIMESTAMP())`, org, actor, e.Action, e.ResourceType, nullableID(e.ResourceID), old, nw); err != nil {
+		s.logError(ctx, "audit write failed", err, e.Action)
+	}
+}
+
+func values(ctx context.Context, e Entry) (int64, any, any, any, error) {
 	org, _ := tenancy.ID(ctx)
 	if org < 1 {
 		org = e.OrganizationID
 	}
-	var uid any
-	if c, ok := auth.From(ctx); ok {
-		uid = c.UserID
+	var actor any
+	if claims, ok := auth.From(ctx); ok {
+		actor = claims.UserID
 	} else if e.ActorUserID > 0 {
-		uid = e.ActorUserID
+		actor = e.ActorUserID
 	}
-	// Keep absent before/after snapshots as SQL NULL. Encoding a nil interface
-	// directly with json.Marshal produces the JSON literal "null", which is
-	// semantically different from an event having no old/new value.
 	var old, nw any
 	if e.OldValues != nil {
-		encoded, err := json.Marshal(e.OldValues)
+		b, err := json.Marshal(e.OldValues)
 		if err != nil {
-			s.Log.ErrorContext(ctx, "audit old values encode failed", "error", err, "action", e.Action)
-			return
+			return 0, nil, nil, nil, err
 		}
-		old = encoded
+		old = b
 	}
 	if e.NewValues != nil {
-		encoded, err := json.Marshal(e.NewValues)
+		b, err := json.Marshal(e.NewValues)
 		if err != nil {
-			s.Log.ErrorContext(ctx, "audit new values encode failed", "error", err, "action", e.Action)
-			return
+			return 0, nil, nil, nil, err
 		}
-		nw = encoded
+		nw = b
 	}
-	if _, err := s.DB.ExecContext(ctx, `INSERT INTO audit_logs(organization_id,actor_user_id,action,resource_type,resource_id,old_values,new_values,created_at) VALUES(?,?,?,?,?,?,?,UTC_TIMESTAMP())`, org, uid, e.Action, e.ResourceType, e.ResourceID, old, nw); err != nil {
-		s.Log.ErrorContext(ctx, "audit write failed", "error", err, "action", e.Action)
+	return org, actor, old, nw, nil
+}
+
+func nullableID(id int64) any {
+	if id < 1 {
+		return nil
+	}
+	return id
+}
+
+func (s *Service) logError(ctx context.Context, msg string, err error, action string) {
+	if s.Log != nil {
+		s.Log.ErrorContext(ctx, msg, "error", err, "action", action)
 	}
 }

@@ -20,7 +20,7 @@ type Handler struct {
 }
 
 func NewHandler(db *sql.DB, a *rbac.Service, au *audit.Service) *Handler {
-	return &Handler{a, au, NewService(db, a)}
+	return &Handler{a, au, NewService(db, a, au)}
 }
 func (h *Handler) registerRoutes(r chi.Router) {
 	r.Route("/approvals", func(r chi.Router) {
@@ -91,11 +91,6 @@ func (h *Handler) act(w http.ResponseWriter, r *http.Request, approve bool) {
 	case e != nil:
 		httpx.Fail(w, apperr.Database)
 	default:
-		action := "approval.rejected"
-		if approve {
-			action = "approval.approved"
-		}
-		h.audit.Record(r.Context(), audit.Entry{Action: action, ResourceType: "approval_request", ResourceID: id})
 		httpx.OK(w, map[string]any{"id": id, "status": "recorded"})
 	}
 }

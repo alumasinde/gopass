@@ -21,7 +21,7 @@ type Handler struct {
 }
 
 func NewHandler(db *sql.DB, a *rbac.Service, au *audit.Service) *Handler {
-	return &Handler{a, au, NewService(db, a)}
+	return &Handler{a, au, NewService(db, a, au)}
 }
 func (h *Handler) registerRoutes(r chi.Router) {
 	r.Route("/gatepasses", func(r chi.Router) {
@@ -104,7 +104,6 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 		httpx.Fail(w, apperr.Database)
 		return
 	}
-	h.audit.Record(r.Context(), audit.Entry{Action: "gatepass.created", ResourceType: "gatepass", ResourceID: v.ID})
 	httpx.Created(w, v)
 }
 func (h *Handler) Submit(w http.ResponseWriter, r *http.Request) {
@@ -131,17 +130,16 @@ func (h *Handler) Submit(w http.ResponseWriter, r *http.Request) {
 	case e != nil:
 		httpx.Fail(w, apperr.Database)
 	default:
-		h.audit.Record(r.Context(), audit.Entry{Action: "gatepass.submitted", ResourceType: "gatepass", ResourceID: id})
 		httpx.OK(w, map[string]any{"id": id, "status": status})
 	}
 }
 func (h *Handler) Cancel(w http.ResponseWriter, r *http.Request) {
-	h.transition(w, r, "gatepasses.cancel", StatusCancelled, "gatepass.cancelled")
+	h.transition(w, r, StatusCancelled)
 }
 func (h *Handler) Revoke(w http.ResponseWriter, r *http.Request) {
-	h.transition(w, r, "gatepasses.revoke", StatusRevoked, "gatepass.revoked")
+	h.transition(w, r, StatusRevoked)
 }
-func (h *Handler) transition(w http.ResponseWriter, r *http.Request, p, to, action string) {
+func (h *Handler) transition(w http.ResponseWriter, r *http.Request, to string) {
 	id, e := httpx.ID(chi.URLParam(r, "id"))
 	if e != nil {
 		httpx.Fail(w, apperr.InvalidID)
@@ -165,6 +163,5 @@ func (h *Handler) transition(w http.ResponseWriter, r *http.Request, p, to, acti
 		httpx.Fail(w, apperr.Database)
 		return
 	}
-	h.audit.Record(r.Context(), audit.Entry{Action: action, ResourceType: "gatepass", ResourceID: id})
 	httpx.OK(w, map[string]any{"id": id, "status": to})
 }

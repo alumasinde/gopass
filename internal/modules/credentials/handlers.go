@@ -19,7 +19,7 @@ type Handler struct {
 }
 
 func NewHandler(db *sql.DB, a *rbac.Service, au *audit.Service) *Handler {
-	return &Handler{a, au, NewService(db, a)}
+	return &Handler{a, au, NewService(db, a, au)}
 }
 func (h *Handler) registerRoutes(r chi.Router) {
 	r.Route("/credentials", func(r chi.Router) {
@@ -93,7 +93,6 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 		httpx.Fail(w, apperr.Database)
 		return
 	}
-	h.audit.Record(r.Context(), audit.Entry{Action: "credential.issued", ResourceType: "credential", ResourceID: v.ID})
 	httpx.Created(w, v)
 }
 func (h *Handler) Verify(w http.ResponseWriter, r *http.Request) {
@@ -139,6 +138,5 @@ func (h *Handler) Revoke(w http.ResponseWriter, r *http.Request) {
 		httpx.Fail(w, apperr.Database)
 		return
 	}
-	h.audit.Record(r.Context(), audit.Entry{Action: "credential.revoked", ResourceType: "credential", ResourceID: id})
 	httpx.OK(w, map[string]any{"id": id, "is_revoked": true})
 }
