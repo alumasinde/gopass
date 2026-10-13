@@ -1,15 +1,16 @@
 # Platform administration and notification delivery
 
-## Apply migration
+## Apply migrations
 
-Back up MySQL, then apply the new additive migration. Migrations `0001`–`0008` are not edited.
+Create separate MySQL schemas for the shared tenant data plane and platform control plane, configure `DB_DSN` and `PLATFORM_DB_DSN`, and back up any existing data.
 
 ```powershell
+go run ./cmd/platform-migrate up
 go run ./cmd/migrate status
 go run ./cmd/migrate up
 ```
 
-Migration `0009_notifications_platform_tenants.sql` adds the durable notification queue, platform administrator/session/audit tables, and tenant lifecycle/provisioning metadata. Existing organizations remain `ACTIVE`/`READY` by default.
+Platform Admin accounts and tenant registry data live in the database selected by `PLATFORM_DB_DSN`. Shared tenant operations live in `DB_DSN`; dedicated tenants use their own database. For an existing single-database installation, run `go run ./cmd/platform-import` after platform migrations and **before** tenant migration 0011, which removes the legacy platform-only tables from the tenant database. See `docs/platform-database-separation.md` for the safe cutover steps.
 
 ## Bootstrap the first platform administrator
 
@@ -22,7 +23,7 @@ $env:PLATFORM_ADMIN_NAME = "GoPass Platform Administrator"
 go run ./cmd/platform-admin-create
 ```
 
-The command hashes the password with bcrypt. It never prints the password. Run after migration 0009. Duplicate email is rejected by the unique index.
+The command hashes the password with bcrypt. It never prints the password. Run after `go run ./cmd/platform-migrate up`. Duplicate email is rejected by the unique index.
 
 ## Platform API
 
@@ -32,7 +33,7 @@ Base path: `/api/v1/platform`
 - `POST /auth/logout` — revoke current platform session.
 - `GET /admins`, `POST /admins`, `PATCH /admins/{id}/suspend` — list, create, and suspend platform administrators; suspending an admin revokes their sessions.
 - `GET /organizations` and `GET /organizations/{id}` — tenant lifecycle and provisioning status.
-- `POST /organizations` — create a SHARED or DEDICATED organization and its initial organization-admin user atomically; dedicated tenants remain inactive until database configuration and provisioning complete.
+- `POST /organizations` — create a SHARED or DEDICATED tenant registry record and a recoverable bootstrap request. The background worker creates the initial organization-admin identity in the tenant data plane; dedicated tenants remain inactive until database configuration and provisioning complete.
 - `PATCH /organizations/{id}/suspend` — immediately disables tenant login/access.
 - `PATCH /organizations/{id}/resume` — only a READY tenant can be resumed; old refresh sessions are revoked before reactivation.
 - `POST /organizations/{id}/provision/retry` — retries failed provisioning for shared or configured dedicated tenants.
@@ -55,15 +56,15 @@ All lifecycle mutations and platform login/logout session events are written to 
 }
 ```
 
-Shared tenants begin `PROVISIONING/PENDING`; the create operation atomically creates the initial organization-admin user and grants the tenant’s current permission catalogue. The background provisioner verifies the shared schema and then marks them `ACTIVE/READY`. A tenant remains inactive until ready.
+New tenants begin `PROVISIONING/BOOTSTRAPPING`. The platform database temporarily holds a bcrypt password hash and initial identity payload so the worker can recover after a restart. The worker creates the organization-admin user and role in the shared tenant schema, deletes the bootstrap request after success, then validates the selected schema and marks the tenant `ACTIVE/READY`. A tenant remains inactive until ready.
 
 ## Dedicated database provisioning and routing
 
-Dedicated database routing is implemented in `internal/app/database/router.go`. Tenant-owned repositories use the router and require an organization-bound request context. The router checks the central organization lifecycle on each routed database operation and refuses missing tenant context, suspended/deprovisioned tenants, non-READY provisioning states, and unavailable or invalid dedicated databases.
+Dedicated database routing is implemented in `internal/app/database/router.go`. Tenant-owned repositories use the router and require an organization-bound request context. The router checks the platform registry lifecycle on each routed database operation and refuses missing tenant context, suspended/deprovisioned tenants, non-READY provisioning states, and unavailable or invalid dedicated databases.
 
-Dedicated DSNs are encrypted using AES-256-GCM. Set `PLATFORM_DB_ENCRYPTION_KEY` to a securely generated 32-byte value (or base64-encoded 32-byte key) and keep it identical across API and worker instances. The platform rejects the central database and a target already assigned to another dedicated tenant. The target database must already exist and the supplied DB user must have permission to apply schema migrations.
+Dedicated DSNs are encrypted using AES-256-GCM. Set `PLATFORM_DB_ENCRYPTION_KEY` to a securely generated 32-byte value (or base64-encoded 32-byte key) and keep it identical across API and worker instances. The platform rejects both the platform and shared tenant databases and a target already assigned to another dedicated tenant. The target database must already exist and the supplied DB user must have permission to apply schema migrations.
 
-The background provisioner runs embedded migrations `0001`–`0009` against the dedicated database, validates required tables/columns/indexes, rejects unrelated organization records, seeds the organization row and copies the initial tenant users, roles and role-permission grants. Only after this succeeds does the central control plane switch the tenant to `ACTIVE/READY`. Existing refresh sessions are intentionally not copied to the dedicated database when a tenant changes database mode.
+The background provisioner runs the embedded tenant migration set against the dedicated database, validates required tables/columns/indexes, rejects unrelated organization records, seeds the organization row and copies the initial tenant users, roles and role-permission grants. Once verified, temporary shared-schema identity records are removed from the shared data plane. Only after this succeeds does the platform control plane switch the tenant to `ACTIVE/READY`. Existing refresh sessions are intentionally not copied to the dedicated database when a tenant changes database mode.
 
 Suspension blocks routing centrally, revokes refresh sessions in the tenant's actual database and invalidates the cached connection pool. If the dedicated database is unavailable, suspension remains in effect; resumption is blocked until session revocation can complete. Provisioning failures leave the tenant inactive with an error status and can be retried through the platform endpoint.
 

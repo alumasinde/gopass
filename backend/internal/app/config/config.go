@@ -14,10 +14,10 @@ import (
 )
 
 type Config struct {
-	AppName, AppEnv, AppURL, Host, DBDSN, JWTSecret, JWTIssuer, LogLevel string
-	Port                                                                 int
-	AccessTTL, RefreshTTL                                                time.Duration
-	CORS                                                                 []string
+	AppName, AppEnv, AppURL, Host, DBDSN, PlatformDBDSN, JWTSecret, JWTIssuer, LogLevel string
+	Port                                                                                int
+	AccessTTL, RefreshTTL                                                               time.Duration
+	CORS                                                                                []string
 }
 
 func Load() (Config, error) {
@@ -37,18 +37,19 @@ func Load() (Config, error) {
 	}
 
 	cfg := Config{
-		AppName:    env("APP_NAME", "gopass"),
-		AppEnv:     strings.ToLower(env("APP_ENV", "development")),
-		AppURL:     env("APP_URL", "http://localhost:8080"),
-		Host:       env("HTTP_HOST", "0.0.0.0"),
-		Port:       port,
-		DBDSN:      DSN(),
-		JWTSecret:  env("JWT_SECRET", ""),
-		JWTIssuer:  env("JWT_ISSUER", "gopass"),
-		AccessTTL:  access,
-		RefreshTTL: refresh,
-		CORS:       csv(env("CORS_ALLOWED_ORIGINS", "")),
-		LogLevel:   env("LOG_LEVEL", "INFO"),
+		AppName:       env("APP_NAME", "gopass"),
+		AppEnv:        strings.ToLower(env("APP_ENV", "development")),
+		AppURL:        env("APP_URL", "http://localhost:8080"),
+		Host:          env("HTTP_HOST", "0.0.0.0"),
+		Port:          port,
+		DBDSN:         DSN(),
+		PlatformDBDSN: PlatformDSN(),
+		JWTSecret:     env("JWT_SECRET", ""),
+		JWTIssuer:     env("JWT_ISSUER", "gopass"),
+		AccessTTL:     access,
+		RefreshTTL:    refresh,
+		CORS:          csv(env("CORS_ALLOWED_ORIGINS", "")),
+		LogLevel:      env("LOG_LEVEL", "INFO"),
 	}
 	if err := Validate(cfg); err != nil {
 		return Config{}, err
@@ -58,7 +59,26 @@ func Load() (Config, error) {
 
 func Validate(cfg Config) error {
 	if cfg.DBDSN == "" {
-		return errors.New("DB_DSN (or DB_NAME and the DB_* parts) is required")
+		return errors.New("DB_DSN (or DB_NAME and the DB_* parts) is required for the shared tenant database")
+	}
+	if cfg.PlatformDBDSN == "" {
+		return errors.New("PLATFORM_DB_DSN is required for the platform control-plane database")
+	}
+	platformName, platformErr := databaseName(cfg.PlatformDBDSN)
+	sharedName, sharedErr := databaseName(cfg.DBDSN)
+	if cfg.AppEnv == "production" && (platformErr != nil || sharedErr != nil) {
+		return errors.New("PLATFORM_DB_DSN and DB_DSN must be valid MySQL DSNs with database names")
+	}
+	if platformErr == nil && sharedErr == nil {
+		platformHost, _ := databaseAddress(cfg.PlatformDBDSN)
+		sharedHost, _ := databaseAddress(cfg.DBDSN)
+		sameDatabase := strings.EqualFold(platformName, sharedName) && strings.EqualFold(platformHost, sharedHost)
+		// Legacy local development may omit PLATFORM_DB_DSN and thereby use the
+		// same pool deliberately. If the variable is explicitly set, require a
+		// genuinely separate schema even outside production.
+		if sameDatabase && (cfg.AppEnv == "production" || strings.TrimSpace(os.Getenv("PLATFORM_DB_DSN")) != "") {
+			return errors.New("PLATFORM_DB_DSN must point to a different database from DB_DSN")
+		}
 	}
 	if len(cfg.JWTSecret) < 32 {
 		return errors.New("JWT_SECRET must be at least 32 characters")
@@ -105,6 +125,51 @@ func csv(s string) []string {
 		}
 	}
 	return o
+}
+
+// PlatformDSN reads the control-plane database connection. For local upgrade
+// compatibility only, it falls back to DB_DSN outside production; production
+// requires an explicitly configured and separate PLATFORM_DB_DSN.
+func PlatformDSN() string {
+	if v := strings.TrimSpace(os.Getenv("PLATFORM_DB_DSN")); v != "" {
+		return normalizeDSN(v)
+	}
+	if strings.EqualFold(env("APP_ENV", "development"), "production") {
+		return ""
+	}
+	return DSN()
+}
+
+func normalizeDSN(value string) string {
+	c, err := mysql.ParseDSN(value)
+	if err != nil {
+		return value
+	}
+	c.ParseTime = true
+	c.Loc = time.UTC
+	if c.Params == nil {
+		c.Params = map[string]string{}
+	}
+	c.Params["time_zone"] = "'+00:00'"
+	return c.FormatDSN()
+}
+
+func databaseName(dsn string) (string, error) {
+	c, err := mysql.ParseDSN(dsn)
+	if err != nil {
+		return "", err
+	}
+	if strings.TrimSpace(c.DBName) == "" {
+		return "", errors.New("database name required")
+	}
+	return c.DBName, nil
+}
+func databaseAddress(dsn string) (string, error) {
+	c, err := mysql.ParseDSN(dsn)
+	if err != nil {
+		return "", err
+	}
+	return strings.ToLower(c.Net + "/" + c.Addr), nil
 }
 
 func DSN() string {

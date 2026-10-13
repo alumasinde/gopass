@@ -16,8 +16,8 @@ Production-oriented Go/Chi foundation for a multi-tenant gatepass platform.
 All application endpoints are under `/api/v1`. OpenAPI is in `docs/openapi.yaml`.
 
 ## Run
-1. Copy `.env.example` to `.env`, set `DB_DSN` (or the `DB_*` parts) and a strong `JWT_SECRET`.
-2. Apply the schema: `go run ./cmd/migrate up` (creates the database if missing, applies every pending file in `migrations/`; check with `go run ./cmd/migrate status`).
+1. Copy `.env.example` to `.env`, create the `gopass_tenants` and `gopass_platform` MySQL schemas, configure both `DB_DSN` and `PLATFORM_DB_DSN`, and set a strong `JWT_SECRET`.
+2. Apply the shared tenant schema: `go run ./cmd/migrate up` (check with `go run ./cmd/migrate status`). Apply the separate control-plane schema with `go run ./cmd/platform-migrate up` against `PLATFORM_DB_DSN`.
 3. Optional demo data: `go run ./cmd/seed`.
 4. Run `go mod tidy`, then `go test ./...`.
 5. Run `go run ./cmd/api`.
@@ -74,4 +74,4 @@ Run standard tests with `go test ./...`, integration tests with `go test -tags=i
 
 ## Platform Admin database migrations UI
 
-See [docs/migrations-ui.md](docs/migrations-ui.md). The UI reads actual embedded migration files and database history; execution is disabled by default and must be enabled temporarily with `PLATFORM_MIGRATIONS_UI_ENABLED=true` during an approved maintenance window. For a new database, bootstrap through `go run ./cmd/migrate up` before using the UI. Migration 0010 adds checksum history and persistent UI-run tracking.
+See [docs/migrations-ui.md](docs/migrations-ui.md). The UI reads actual embedded migration files and database history; execution is disabled by default and must be enabled temporarily with `PLATFORM_MIGRATIONS_UI_ENABLED=true` during an approved maintenance window. The UI targets only `PLATFORM_DB_DSN`; bootstrap it first with `go run ./cmd/platform-migrate up`. The shared tenant schema remains on `DB_DSN`. For existing single-database installs, run `go run ./cmd/platform-import` before applying tenant migration 0011, which removes the legacy platform-only tables. See [platform-database-separation.md](docs/platform-database-separation.md) for first-time setup and the safe legacy import procedure.

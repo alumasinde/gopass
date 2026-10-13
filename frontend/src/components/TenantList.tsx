@@ -80,6 +80,7 @@ export default function TenantList({ tenants, onAction, onRowClick }: TenantList
     switch (status) {
       case 'READY': return '#10b981';
       case 'PENDING': return '#3b82f6';
+      case 'BOOTSTRAPPING': return '#8b5cf6';
       case 'FAILED': return '#ef4444';
       case 'BLOCKED': return '#f59e0b';
       default: return '#6b7280';
@@ -153,10 +154,19 @@ export default function TenantList({ tenants, onAction, onRowClick }: TenantList
                 {formatLocalDate(tenant.created_at)}
               </td>
               <td style={{ padding: '0.75rem 1rem', textAlign: 'right' }}>
-                <div style={{ display: 'flex', gap: '0.5rem', justifyContent: 'flex-end' }}>
+                <div style={{ display: 'flex', gap: '0.5rem', justifyContent: 'flex-end', flexWrap: 'wrap' }}>
+                  {onRowClick && (
+                    <button
+                      type="button"
+                      onClick={(event) => { event.stopPropagation(); onRowClick(tenant.id); }}
+                      style={{ padding: '0.25rem 0.5rem', backgroundColor: '#eff6ff', color: '#1d4ed8', border: '1px solid #bfdbfe', borderRadius: '4px', fontSize: '0.75rem', cursor: 'pointer' }}
+                    >
+                      View details
+                    </button>
+                  )}
                   {tenant.lifecycle_status === 'ACTIVE' && (
                     <button
-                      onClick={() => handleSuspend(tenant.id)}
+                      onClick={(event) => { event.stopPropagation(); handleSuspend(tenant.id); }}
                       disabled={!!actionLoading[tenant.id]}
                       style={{
                         padding: '0.25rem 0.5rem',
@@ -173,7 +183,7 @@ export default function TenantList({ tenants, onAction, onRowClick }: TenantList
                   )}
                   {tenant.lifecycle_status === 'SUSPENDED' && (
                     <button
-                      onClick={() => handleResume(tenant.id)}
+                      onClick={(event) => { event.stopPropagation(); handleResume(tenant.id); }}
                       disabled={!!actionLoading[tenant.id]}
                       style={{
                         padding: '0.25rem 0.5rem',
@@ -190,7 +200,7 @@ export default function TenantList({ tenants, onAction, onRowClick }: TenantList
                   )}
                   {(tenant.lifecycle_status === 'ACTIVE' || tenant.lifecycle_status === 'SUSPENDED') && (
                     <button
-                      onClick={() => handleDeprovision(tenant.id)}
+                      onClick={(event) => { event.stopPropagation(); handleDeprovision(tenant.id); }}
                       disabled={!!actionLoading[tenant.id]}
                       style={{
                         padding: '0.25rem 0.5rem',
@@ -207,7 +217,7 @@ export default function TenantList({ tenants, onAction, onRowClick }: TenantList
                   )}
                   {(tenant.provisioning_status === 'FAILED' || tenant.provisioning_status === 'BLOCKED') && (
                     <button
-                      onClick={() => handleRetryProvisioning(tenant.id)}
+                      onClick={(event) => { event.stopPropagation(); handleRetryProvisioning(tenant.id); }}
                       disabled={!!actionLoading[tenant.id]}
                       style={{
                         padding: '0.25rem 0.5rem',

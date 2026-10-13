@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import type { FormEvent } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { platformOrganizations } from '../lib/platform-api';
 import type { Organization } from '../lib/platform-api';
@@ -11,6 +12,10 @@ export default function TenantDetail() {
   const [tenant, setTenant] = useState<Organization | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState('');
+  const [databaseDSN, setDatabaseDSN] = useState('');
+  const [savingDatabase, setSavingDatabase] = useState(false);
+  const [databaseMessage, setDatabaseMessage] = useState('');
+  const [databaseError, setDatabaseError] = useState('');
 
   useEffect(() => {
     const fetchTenant = async () => {
@@ -66,11 +71,36 @@ export default function TenantDetail() {
   const handleRetryProvisioning = async () => {
     if (!tenant) return;
     try {
-      await platformOrganizations.retryProvisioning(tenant.id);
+      const result = await platformOrganizations.retryProvisioning(tenant.id);
+      if (result.id !== tenant.id) {
+        navigate(`/platform/tenants/${result.id}`, { replace: true });
+        const updated = await platformOrganizations.get(result.id);
+        setTenant(updated);
+      } else {
+        const updated = await platformOrganizations.get(tenant.id);
+        setTenant(updated);
+      }
+    } catch (err: any) {
+      alert(apiErrorMessage(err, 'Failed to retry provisioning'));
+    }
+  };
+
+  const handleSaveDatabase = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!tenant || !databaseDSN.trim()) return;
+    setSavingDatabase(true);
+    setDatabaseError('');
+    setDatabaseMessage('');
+    try {
+      await platformOrganizations.setDatabaseConfig(tenant.id, databaseDSN.trim());
+      setDatabaseDSN('');
+      setDatabaseMessage('Database credentials validated and stored encrypted. Provisioning will run in the background.');
       const updated = await platformOrganizations.get(tenant.id);
       setTenant(updated);
     } catch (err: any) {
-      alert(apiErrorMessage(err, 'Failed to retry provisioning'));
+      setDatabaseError(apiErrorMessage(err, 'Failed to configure the dedicated database'));
+    } finally {
+      setSavingDatabase(false);
     }
   };
 
@@ -119,6 +149,7 @@ export default function TenantDetail() {
     switch (status) {
       case 'READY': return '#10b981';
       case 'PENDING': return '#3b82f6';
+      case 'BOOTSTRAPPING': return '#8b5cf6';
       case 'FAILED': return '#ef4444';
       case 'BLOCKED': return '#f59e0b';
       default: return '#6b7280';
@@ -169,6 +200,20 @@ export default function TenantDetail() {
           <p style={{ fontSize: '1.125rem', fontWeight: '500', margin: 0 }}>{tenant.database_mode}</p>
         </div>
       </div>
+
+      {tenant.database_mode === 'DEDICATED' && (!tenant.database_configured || tenant.provisioning_status === 'FAILED' || tenant.provisioning_status === 'BLOCKED') && tenant.lifecycle_status !== 'DEPROVISIONED' && (
+        <div style={{ backgroundColor: 'white', padding: '1.5rem', borderRadius: '8px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)', marginBottom: '2rem' }}>
+          <h3 style={{ fontSize: '1rem', fontWeight: '600', marginBottom: '0.5rem' }}>Dedicated database configuration</h3>
+          <p style={{ color: '#6b7280', fontSize: '0.875rem', marginTop: 0 }}>Enter a MySQL DSN for an empty database or an existing GoPass tenant schema. Credentials are encrypted before they are stored. Do not use the platform or shared tenant database.</p>
+          {databaseError && <div role="alert" style={{ backgroundColor: '#fee2e2', color: '#991b1b', padding: '0.75rem', borderRadius: '4px', marginBottom: '1rem' }}>{databaseError}</div>}
+          {databaseMessage && <div role="status" style={{ backgroundColor: '#dcfce7', color: '#166534', padding: '0.75rem', borderRadius: '4px', marginBottom: '1rem' }}>{databaseMessage}</div>}
+          <form onSubmit={handleSaveDatabase}>
+            <label htmlFor="tenant-database-dsn" style={{ display: 'block', fontSize: '0.875rem', fontWeight: 500, marginBottom: '0.5rem' }}>MySQL DSN</label>
+            <input id="tenant-database-dsn" type="password" autoComplete="new-password" value={databaseDSN} onChange={event => setDatabaseDSN(event.target.value)} required placeholder="user:password@tcp(host:3306)/tenant_db?parseTime=true" style={{ width: '100%', boxSizing: 'border-box', padding: '0.75rem', border: '1px solid #d1d5db', borderRadius: '6px', marginBottom: '1rem' }} />
+            <button type="submit" disabled={savingDatabase} style={{ padding: '0.65rem 1rem', backgroundColor: savingDatabase ? '#9ca3af' : '#2563eb', color: 'white', border: 0, borderRadius: '6px', cursor: savingDatabase ? 'not-allowed' : 'pointer' }}>{savingDatabase ? 'Validating…' : 'Save and provision database'}</button>
+          </form>
+        </div>
+      )}
 
       <div style={{ backgroundColor: 'white', padding: '1.5rem', borderRadius: '8px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)', marginBottom: '2rem' }}>
         <h3 style={{ fontSize: '1rem', fontWeight: '600', marginBottom: '1rem' }}>Timeline</h3>

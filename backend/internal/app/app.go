@@ -46,24 +46,32 @@ type App struct {
 func New(cfg config.Config) (*App, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	centralDB, e := database.Open(ctx, cfg.DBDSN)
+	sharedDB, e := database.Open(ctx, cfg.DBDSN)
 	if e != nil {
-		return nil, e
+		return nil, fmt.Errorf("open shared tenant database: %w", e)
 	}
-	router := database.NewRouter(centralDB)
+	platformDB := sharedDB
+	if cfg.PlatformDBDSN != cfg.DBDSN {
+		platformDB, e = database.Open(ctx, cfg.PlatformDBDSN)
+		if e != nil {
+			_ = sharedDB.Close()
+			return nil, fmt.Errorf("open platform control-plane database: %w", e)
+		}
+	}
+	router := database.NewRouter(platformDB, sharedDB)
 	l := logger.New(cfg.LogLevel)
 	tokens := auth.New(cfg.JWTSecret, cfg.JWTIssuer, cfg.AccessTTL, cfg.RefreshTTL)
 	az := rbac.New(router)
 	au := audit.New(router, l)
 	authHandler := users.NewAuthService(router, tokens, au)
 	usersHandler := users.NewHandler(router, az, au)
-	d := routes.Dependencies{Auth: authHandler, Authz: az, Audit: au, Users: usersHandler, Organizations: organizations.NewHandler(router, az, au), Roles: roles.NewHandler(router, az, au), Sites: sites.NewHandler(router, az, au), Gates: gates.NewHandler(router, az, au), Visitors: visitors.NewHandler(router, az, au), Gatepasses: gatepasses.NewHandler(router, az, au), Approvals: approvals.NewHandler(router, az, au), Credentials: credentials.NewHandler(router, az, au), Checkins: checkins.NewHandler(router, az, au), Checkouts: checkouts.NewHandler(router, az, au), PassTypes: passtypes.NewHandler(router, az, au), Notifications: notifications.NewHandler(router, az), Platform: platformadmin.New(centralDB, tokens, router)}
+	d := routes.Dependencies{Auth: authHandler, Authz: az, Audit: au, Users: usersHandler, Organizations: organizations.NewHandler(router, az, au), Roles: roles.NewHandler(router, az, au), Sites: sites.NewHandler(router, az, au), Gates: gates.NewHandler(router, az, au), Visitors: visitors.NewHandler(router, az, au), Gatepasses: gatepasses.NewHandler(router, az, au), Approvals: approvals.NewHandler(router, az, au), Credentials: credentials.NewHandler(router, az, au), Checkins: checkins.NewHandler(router, az, au), Checkouts: checkouts.NewHandler(router, az, au), PassTypes: passtypes.NewHandler(router, az, au), Notifications: notifications.NewHandler(router, az), Platform: platformadmin.New(platformDB, tokens, router)}
 	r := chi.NewRouter()
 	//r.Use(middleware.Request, middleware.Security, middleware.CORS(cfg.CORS), middleware.Log(l), middleware.Recover(l), middleware.Bearer(tokens, authHandler.Service))
 	r.Use(middleware.Request, middleware.Security, middleware.CORS(cfg.CORS), middleware.Log(l), middleware.Recover(l))
 	routes.RegisterAPI(r, d)
 	smtpCfg := notifications.SMTPConfig{Host: os.Getenv("SMTP_HOST"), Port: os.Getenv("SMTP_PORT"), Username: os.Getenv("SMTP_USERNAME"), Password: os.Getenv("SMTP_PASSWORD"), From: os.Getenv("SMTP_FROM")}
-	return &App{db: router, server: &http.Server{Addr: fmt.Sprintf("%s:%d", cfg.Host, cfg.Port), Handler: r, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, WriteTimeout: 30 * time.Second, IdleTimeout: 60 * time.Second}, log: l, notificationWorker: notifications.NewWorker(router, smtpCfg, l), tenantProvisioner: platformadmin.NewProvisioner(centralDB, l, router)}, nil
+	return &App{db: router, server: &http.Server{Addr: fmt.Sprintf("%s:%d", cfg.Host, cfg.Port), Handler: r, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, WriteTimeout: 30 * time.Second, IdleTimeout: 60 * time.Second}, log: l, notificationWorker: notifications.NewWorker(router, smtpCfg, l), tenantProvisioner: platformadmin.NewProvisioner(platformDB, l, router)}, nil
 }
 func (a *App) Run() error {
 	workerCtx, stopWorkers := context.WithCancel(context.Background())

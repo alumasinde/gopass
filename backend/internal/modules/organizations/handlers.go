@@ -88,14 +88,12 @@ func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
-	if mode == "DEDICATED" {
-		if _, err := h.central.ExecContext(r.Context(), `UPDATE organizations SET name=?,slug=?,updated_at=UTC_TIMESTAMP() WHERE id=? AND database_mode='DEDICATED'`, in.Name, in.Slug, org); err != nil {
-			// Best-effort compensation keeps the dedicated copy aligned if the
-			// globally unique central slug update fails.
-			_ = h.service.UpdateOrganization(r.Context(), &Organization{ID: org, Name: oldName, Slug: oldSlug})
-			httpx.Fail(w, apperr.Conflict.With("organization metadata could not be synchronized; previous values restored where possible"))
-			return
-		}
+	if _, err := h.central.ExecContext(r.Context(), `UPDATE organizations SET name=?,slug=?,updated_at=UTC_TIMESTAMP() WHERE id=?`, in.Name, in.Slug, org); err != nil {
+		// Best-effort compensation keeps the dedicated copy aligned if the
+		// globally unique central slug update fails.
+		_ = h.service.UpdateOrganization(r.Context(), &Organization{ID: org, Name: oldName, Slug: oldSlug})
+		httpx.Fail(w, apperr.Conflict.With("organization metadata could not be synchronized; previous values restored where possible"))
+		return
 	}
 	h.audit.Record(r.Context(), audit.Entry{Action: "organization.updated", ResourceType: "organization", ResourceID: org})
 	httpx.OK(w, map[string]any{"id": org, "name": organization.Name, "slug": organization.Slug})

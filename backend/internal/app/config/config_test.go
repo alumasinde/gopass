@@ -46,3 +46,29 @@ func TestDSNUsesUTCForComponentConfiguration(t *testing.T) {
 		t.Fatalf("MySQL session time_zone = %q, want '+00:00'", cfg.Params["time_zone"])
 	}
 }
+
+func TestPlatformDSNUsesDedicatedDatabaseWhenConfigured(t *testing.T) {
+	t.Setenv("PLATFORM_DB_DSN", "user:pass@tcp(127.0.0.1:3306)/gopass_platform?parseTime=false")
+	dsn := PlatformDSN()
+	cfg, err := mysql.ParseDSN(dsn)
+	if err != nil {
+		t.Fatalf("parse platform DSN: %v", err)
+	}
+	if cfg.DBName != "gopass_platform" {
+		t.Fatalf("platform DB = %q, want gopass_platform", cfg.DBName)
+	}
+	if !cfg.ParseTime || cfg.Loc != time.UTC || cfg.Params["time_zone"] != "'+00:00'" {
+		t.Fatal("platform DSN must enforce UTC time parsing and session timezone")
+	}
+}
+
+func TestProductionRequiresDistinctPlatformDatabase(t *testing.T) {
+	base := Config{AppEnv: "production", DBDSN: "user:pass@tcp(127.0.0.1:3306)/gopass", PlatformDBDSN: "user:pass@tcp(127.0.0.1:3306)/gopass", JWTSecret: "a-strong-secret-value-that-is-long-enough", AccessTTL: 15 * time.Minute, RefreshTTL: 24 * time.Hour, CORS: []string{"https://example.com"}}
+	if err := Validate(base); err == nil {
+		t.Fatal("expected production validation to reject same platform and shared schema")
+	}
+	base.PlatformDBDSN = "user:pass@tcp(127.0.0.1:3306)/gopass_platform"
+	if err := Validate(base); err != nil {
+		t.Fatalf("separate platform database should validate: %v", err)
+	}
+}

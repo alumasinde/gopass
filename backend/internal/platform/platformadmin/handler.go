@@ -27,10 +27,14 @@ import (
 	"github.com/alumasinde/gopass/internal/platform/auth"
 	"github.com/alumasinde/gopass/internal/platform/httpx"
 	"github.com/alumasinde/gopass/internal/platform/ratelimit"
-	"github.com/alumasinde/gopass/migrations"
+	platformmigrations "github.com/alumasinde/gopass/platform_migrations"
 	"github.com/go-chi/chi/v5"
 	"github.com/go-sql-driver/mysql"
 )
+
+type organizationIDAllocator interface {
+	AllocateOrganizationID(context.Context, *sql.Tx) (int64, error)
+}
 
 type Handler struct {
 	db            *sql.DB
@@ -319,7 +323,7 @@ func (h *Handler) SuspendAdmin(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) ListOrganizations(w http.ResponseWriter, r *http.Request) {
-	rows, err := h.db.QueryContext(r.Context(), `SELECT id,name,slug,is_active,lifecycle_status,database_mode,provisioning_status,provisioning_error,provisioned_at,suspended_at,created_at,updated_at FROM organizations ORDER BY id DESC LIMIT 500`)
+	rows, err := h.db.QueryContext(r.Context(), `SELECT id,name,slug,is_active,lifecycle_status,database_mode,provisioning_status,database_config_ciphertext IS NOT NULL AND database_config_ciphertext<>'',provisioning_error,provisioned_at,suspended_at,created_at,updated_at FROM organizations ORDER BY id DESC LIMIT 500`)
 	if err != nil {
 		httpx.Fail(w, apperr.Database)
 		return
@@ -345,7 +349,7 @@ func (h *Handler) GetOrganization(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	row := h.db.QueryRowContext(r.Context(), `SELECT id,name,slug,is_active,lifecycle_status,database_mode,provisioning_status,provisioning_error,provisioned_at,suspended_at,created_at,updated_at FROM organizations WHERE id=?`, id)
+	row := h.db.QueryRowContext(r.Context(), `SELECT id,name,slug,is_active,lifecycle_status,database_mode,provisioning_status,database_config_ciphertext IS NOT NULL AND database_config_ciphertext<>'',provisioning_error,provisioned_at,suspended_at,created_at,updated_at FROM organizations WHERE id=?`, id)
 	item, err := scanOrg(row)
 	if errors.Is(err, sql.ErrNoRows) {
 		httpx.Fail(w, apperr.NotFound)
@@ -404,45 +408,74 @@ func (h *Handler) CreateOrganization(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer tx.Rollback()
-	res, err := tx.ExecContext(r.Context(), `INSERT INTO organizations(name,slug,is_active,lifecycle_status,database_mode,provisioning_status,created_at,updated_at) VALUES(?,?,0,'PROVISIONING',?,'PENDING',UTC_TIMESTAMP(),UTC_TIMESTAMP())`, in.Name, in.Slug, mode)
+	provisioningStatus := "BOOTSTRAPPING"
+	if h.tenantPools == nil {
+		provisioningStatus = "PENDING"
+	} // Legacy single-database compatibility for integration tests/local upgrades.
+	var id int64
+	if allocator, ok := h.tenantPools.(organizationIDAllocator); ok {
+		id, err = allocator.AllocateOrganizationID(r.Context(), tx)
+		if err != nil {
+			httpx.Fail(w, apperr.Database.With("could not allocate a tenant ID; apply platform migrations and check the shared tenant database"))
+			return
+		}
+	}
+	var res sql.Result
+	if id > 0 {
+		res, err = tx.ExecContext(r.Context(), `INSERT INTO organizations(id,name,slug,is_active,lifecycle_status,database_mode,provisioning_status,created_at,updated_at) VALUES(?,?,?,0,'PROVISIONING',?,?,UTC_TIMESTAMP(),UTC_TIMESTAMP())`, id, in.Name, in.Slug, mode, provisioningStatus)
+	} else {
+		res, err = tx.ExecContext(r.Context(), `INSERT INTO organizations(name,slug,is_active,lifecycle_status,database_mode,provisioning_status,created_at,updated_at) VALUES(?,?,0,'PROVISIONING',?,?,UTC_TIMESTAMP(),UTC_TIMESTAMP())`, in.Name, in.Slug, mode, provisioningStatus)
+	}
 	if err != nil {
 		httpx.Fail(w, apperr.Conflict.With("organization slug already exists or organization could not be created"))
 		return
 	}
-	id, err := res.LastInsertId()
-	if err != nil {
-		httpx.Fail(w, apperr.Database)
-		return
+	if id == 0 {
+		id, err = res.LastInsertId()
+		if err != nil {
+			httpx.Fail(w, apperr.Database)
+			return
+		}
 	}
-	roleRes, err := tx.ExecContext(r.Context(), `INSERT INTO roles(organization_id,name,code,is_system,created_at,updated_at) VALUES(?, 'Organization Administrator','organization_admin',1,UTC_TIMESTAMP(),UTC_TIMESTAMP())`, id)
-	if err != nil {
-		httpx.Fail(w, apperr.Database)
-		return
+	response := map[string]any{"id": id, "name": in.Name, "slug": in.Slug, "database_mode": mode, "lifecycle_status": "PROVISIONING", "provisioning_status": provisioningStatus}
+	if h.tenantPools != nil {
+		if _, err = tx.ExecContext(r.Context(), `INSERT INTO tenant_bootstrap_requests(organization_id,first_name,last_name,email,password_hash,created_at,updated_at) VALUES(?,?,?,?,?,UTC_TIMESTAMP(),UTC_TIMESTAMP())`, id, in.AdminFirstName, in.AdminLastName, in.AdminEmail, passwordHash); err != nil {
+			httpx.Fail(w, apperr.Database)
+			return
+		}
+		response["message"] = "Tenant registered. Initial tenant identity will be created in the tenant data plane before schema provisioning."
+	} else {
+		roleRes, e := tx.ExecContext(r.Context(), `INSERT INTO roles(organization_id,name,code,is_system,created_at,updated_at) VALUES(?, 'Organization Administrator','organization_admin',1,UTC_TIMESTAMP(),UTC_TIMESTAMP())`, id)
+		if e != nil {
+			httpx.Fail(w, apperr.Database)
+			return
+		}
+		roleID, e := roleRes.LastInsertId()
+		if e != nil {
+			httpx.Fail(w, apperr.Database)
+			return
+		}
+		userRes, e := tx.ExecContext(r.Context(), `INSERT INTO users(organization_id,first_name,last_name,email,password_hash,is_active,created_at,updated_at) VALUES(?,?,?,?,?,1,UTC_TIMESTAMP(),UTC_TIMESTAMP())`, id, in.AdminFirstName, in.AdminLastName, in.AdminEmail, passwordHash)
+		if e != nil {
+			httpx.Fail(w, apperr.Conflict.With("tenant administrator email may already exist or user could not be created"))
+			return
+		}
+		userID, e := userRes.LastInsertId()
+		if e != nil {
+			httpx.Fail(w, apperr.Database)
+			return
+		}
+		if _, e = tx.ExecContext(r.Context(), `INSERT INTO role_permissions(role_id,permission_id) SELECT ?,id FROM permissions`, roleID); e != nil {
+			httpx.Fail(w, apperr.Database)
+			return
+		}
+		if _, e = tx.ExecContext(r.Context(), `INSERT INTO user_roles(user_id,role_id,organization_id,scope_type,is_active,created_at,updated_at) VALUES(?,?,?,'ORGANIZATION',1,UTC_TIMESTAMP(),UTC_TIMESTAMP())`, userID, roleID, id); e != nil {
+			httpx.Fail(w, apperr.Database)
+			return
+		}
+		response["admin_user_id"] = userID
 	}
-	roleID, err := roleRes.LastInsertId()
-	if err != nil {
-		httpx.Fail(w, apperr.Database)
-		return
-	}
-	userRes, err := tx.ExecContext(r.Context(), `INSERT INTO users(organization_id,first_name,last_name,email,password_hash,is_active,created_at,updated_at) VALUES(?,?,?,?,?,1,UTC_TIMESTAMP(),UTC_TIMESTAMP())`, id, in.AdminFirstName, in.AdminLastName, in.AdminEmail, passwordHash)
-	if err != nil {
-		httpx.Fail(w, apperr.Conflict.With("tenant administrator email may already exist or user could not be created"))
-		return
-	}
-	userID, err := userRes.LastInsertId()
-	if err != nil {
-		httpx.Fail(w, apperr.Database)
-		return
-	}
-	if _, err = tx.ExecContext(r.Context(), `INSERT INTO role_permissions(role_id,permission_id) SELECT ?,id FROM permissions`, roleID); err != nil {
-		httpx.Fail(w, apperr.Database)
-		return
-	}
-	if _, err = tx.ExecContext(r.Context(), `INSERT INTO user_roles(user_id,role_id,organization_id,scope_type,is_active,created_at,updated_at) VALUES(?,?,?,'ORGANIZATION',1,UTC_TIMESTAMP(),UTC_TIMESTAMP())`, userID, roleID, id); err != nil {
-		httpx.Fail(w, apperr.Database)
-		return
-	}
-	if err = h.auditTx(r.Context(), tx, claims.UserID, "organization.provisioning_requested", "organization", id, nil, map[string]any{"name": in.Name, "slug": in.Slug, "database_mode": mode, "provisioning_status": "PENDING", "admin_email": in.AdminEmail}); err != nil {
+	if err = h.auditTx(r.Context(), tx, claims.UserID, "organization.provisioning_requested", "organization", id, nil, map[string]any{"name": in.Name, "slug": in.Slug, "database_mode": mode, "provisioning_status": provisioningStatus, "admin_email": in.AdminEmail}); err != nil {
 		httpx.Fail(w, apperr.Database)
 		return
 	}
@@ -450,7 +483,7 @@ func (h *Handler) CreateOrganization(w http.ResponseWriter, r *http.Request) {
 		httpx.Fail(w, apperr.Database)
 		return
 	}
-	httpx.Created(w, map[string]any{"id": id, "name": in.Name, "slug": in.Slug, "admin_user_id": userID, "database_mode": mode, "lifecycle_status": "PROVISIONING", "provisioning_status": "PENDING"})
+	httpx.Created(w, response)
 }
 func (h *Handler) Suspend(w http.ResponseWriter, r *http.Request) {
 	h.changeLifecycle(w, r, "SUSPENDED")
@@ -511,12 +544,6 @@ func (h *Handler) changeLifecycle(w http.ResponseWriter, r *http.Request, to str
 		httpx.Fail(w, apperr.Database)
 		return
 	}
-	if to == "SUSPENDED" || to == "DEPROVISIONED" {
-		if _, err = tx.ExecContext(r.Context(), `UPDATE refresh_tokens SET revoked_at=UTC_TIMESTAMP() WHERE organization_id=? AND revoked_at IS NULL`, id); err != nil {
-			httpx.Fail(w, apperr.Database)
-			return
-		}
-	}
 	if err = h.auditTx(r.Context(), tx, claims.UserID, "organization."+strings.ToLower(to), "organization", id, map[string]any{"is_active": active, "lifecycle_status": oldLife}, map[string]any{"is_active": newActive, "lifecycle_status": to}); err != nil {
 		httpx.Fail(w, apperr.Database)
 		return
@@ -548,9 +575,9 @@ func (h *Handler) RetryProvisioning(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer tx.Rollback()
-	var mode, status string
+	var mode, status, provisioningError string
 	var hasConfig bool
-	err = tx.QueryRowContext(r.Context(), `SELECT database_mode,provisioning_status,database_config_ciphertext IS NOT NULL AND database_config_ciphertext<>'' FROM organizations WHERE id=? FOR UPDATE`, id).Scan(&mode, &status, &hasConfig)
+	err = tx.QueryRowContext(r.Context(), `SELECT database_mode,provisioning_status,database_config_ciphertext IS NOT NULL AND database_config_ciphertext<>'',COALESCE(provisioning_error,'') FROM organizations WHERE id=? FOR UPDATE`, id).Scan(&mode, &status, &hasConfig, &provisioningError)
 	if errors.Is(err, sql.ErrNoRows) {
 		httpx.Fail(w, apperr.NotFound)
 		return
@@ -559,15 +586,67 @@ func (h *Handler) RetryProvisioning(w http.ResponseWriter, r *http.Request) {
 		httpx.Fail(w, apperr.Database)
 		return
 	}
-	if !(mode == "SHARED" || (mode == "DEDICATED" && hasConfig)) || !(status == "FAILED" || status == "BLOCKED") {
-		httpx.Fail(w, apperr.Conflict.With("tenant provisioning cannot be retried until its database configuration is valid"))
-		return
-	}
-	if _, err = tx.ExecContext(r.Context(), `UPDATE organizations SET is_active=0,lifecycle_status='PROVISIONING',provisioning_status='PENDING',provisioning_error=NULL,updated_at=UTC_TIMESTAMP() WHERE id=?`, id); err != nil {
+	var bootstrapCount int
+	if err = tx.QueryRowContext(r.Context(), `SELECT COUNT(*) FROM tenant_bootstrap_requests WHERE organization_id=?`, id).Scan(&bootstrapCount); err != nil {
 		httpx.Fail(w, apperr.Database)
 		return
 	}
-	if err = h.auditTx(r.Context(), tx, claims.UserID, "organization.provisioning_retried", "organization", id, map[string]any{"provisioning_status": status}, map[string]any{"provisioning_status": "PENDING"}); err != nil {
+	hasBootstrap := bootstrapCount > 0
+	// Recover tenants created before the platform/shared ID ranges were coordinated.
+	// Only re-key a failed, not-yet-bootstrapped organization when the worker has
+	// explicitly reported a conflicting tenant identity row; no tenant data is moved.
+	if hasBootstrap && status == "FAILED" && strings.Contains(provisioningError, "belongs to a different slug") {
+		allocator, supported := h.tenantPools.(organizationIDAllocator)
+		if !supported {
+			httpx.Fail(w, apperr.Conflict.With("tenant ID conflicts with an existing shared tenant; configure the tenant router and apply platform migrations before retrying"))
+			return
+		}
+		var firstName, lastName, email, passwordHash string
+		if err = tx.QueryRowContext(r.Context(), `SELECT first_name,last_name,email,password_hash FROM tenant_bootstrap_requests WHERE organization_id=? FOR UPDATE`, id).Scan(&firstName, &lastName, &email, &passwordHash); err != nil {
+			httpx.Fail(w, apperr.Database)
+			return
+		}
+		newID, allocErr := allocator.AllocateOrganizationID(r.Context(), tx)
+		if allocErr != nil {
+			httpx.Fail(w, apperr.Database.With("could not allocate a safe tenant ID; apply platform migrations first"))
+			return
+		}
+		if _, err = tx.ExecContext(r.Context(), `DELETE FROM tenant_bootstrap_requests WHERE organization_id=?`, id); err != nil {
+			httpx.Fail(w, apperr.Database)
+			return
+		}
+		if _, err = tx.ExecContext(r.Context(), `UPDATE organizations SET id=?,is_active=0,lifecycle_status='PROVISIONING',provisioning_status='BOOTSTRAPPING',provisioning_error=NULL,updated_at=UTC_TIMESTAMP() WHERE id=?`, newID, id); err != nil {
+			httpx.Fail(w, apperr.Database)
+			return
+		}
+		if _, err = tx.ExecContext(r.Context(), `INSERT INTO tenant_bootstrap_requests(organization_id,first_name,last_name,email,password_hash,created_at,updated_at) VALUES(?,?,?,?,?,UTC_TIMESTAMP(),UTC_TIMESTAMP())`, newID, firstName, lastName, email, passwordHash); err != nil {
+			httpx.Fail(w, apperr.Database)
+			return
+		}
+		if err = h.auditTx(r.Context(), tx, claims.UserID, "organization.id_conflict_recovered", "organization", newID, map[string]any{"previous_id": id}, map[string]any{"id": newID, "provisioning_status": "BOOTSTRAPPING"}); err != nil {
+			httpx.Fail(w, apperr.Database)
+			return
+		}
+		if err = tx.Commit(); err != nil {
+			httpx.Fail(w, apperr.Database)
+			return
+		}
+		httpx.OK(w, map[string]any{"id": newID, "previous_id": id, "provisioning_status": "BOOTSTRAPPING", "message": "Conflicting ID safely reassigned. Tenant bootstrap has been queued again."})
+		return
+	}
+	if !(mode == "SHARED" || (mode == "DEDICATED" && (hasConfig || hasBootstrap))) || !(status == "FAILED" || status == "BLOCKED") {
+		httpx.Fail(w, apperr.Conflict.With("tenant provisioning cannot be retried until its database configuration is valid"))
+		return
+	}
+	nextStatus := "PENDING"
+	if hasBootstrap {
+		nextStatus = "BOOTSTRAPPING"
+	}
+	if _, err = tx.ExecContext(r.Context(), `UPDATE organizations SET is_active=0,lifecycle_status='PROVISIONING',provisioning_status=?,provisioning_error=NULL,updated_at=UTC_TIMESTAMP() WHERE id=?`, nextStatus, id); err != nil {
+		httpx.Fail(w, apperr.Database)
+		return
+	}
+	if err = h.auditTx(r.Context(), tx, claims.UserID, "organization.provisioning_retried", "organization", id, map[string]any{"provisioning_status": status}, map[string]any{"provisioning_status": nextStatus}); err != nil {
 		httpx.Fail(w, apperr.Database)
 		return
 	}
@@ -575,7 +654,7 @@ func (h *Handler) RetryProvisioning(w http.ResponseWriter, r *http.Request) {
 		httpx.Fail(w, apperr.Database)
 		return
 	}
-	httpx.OK(w, map[string]any{"id": id, "provisioning_status": "PENDING"})
+	httpx.OK(w, map[string]any{"id": id, "provisioning_status": nextStatus})
 }
 
 func (h *Handler) SetDatabaseConfig(w http.ResponseWriter, r *http.Request) {
@@ -612,11 +691,16 @@ func (h *Handler) SetDatabaseConfig(w http.ResponseWriter, r *http.Request) {
 	}
 	defer tx.Rollback()
 	var oldMode, oldProv string
-	if err = tx.QueryRowContext(r.Context(), `SELECT database_mode,provisioning_status FROM organizations WHERE id=? FOR UPDATE`, id).Scan(&oldMode, &oldProv); errors.Is(err, sql.ErrNoRows) {
+	var hasConfig bool
+	if err = tx.QueryRowContext(r.Context(), `SELECT database_mode,provisioning_status,database_config_ciphertext IS NOT NULL AND database_config_ciphertext<>'' FROM organizations WHERE id=? FOR UPDATE`, id).Scan(&oldMode, &oldProv, &hasConfig); errors.Is(err, sql.ErrNoRows) {
 		httpx.Fail(w, apperr.NotFound)
 		return
 	} else if err != nil {
 		httpx.Fail(w, apperr.Database)
+		return
+	}
+	if oldMode == "DEDICATED" && hasConfig && oldProv != "FAILED" && oldProv != "BLOCKED" {
+		httpx.Fail(w, apperr.Conflict.With("a configured dedicated database cannot be replaced while provisioning or active; suspend and use a reviewed database migration workflow"))
 		return
 	}
 	if oldMode == "SHARED" {
@@ -639,14 +723,25 @@ func (h *Handler) SetDatabaseConfig(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	// Keep bootstrap work queued ahead of database provisioning when the initial
+	// tenant administrator has not yet been copied into the tenant data plane.
+	var bootstrapCount int
+	if err = tx.QueryRowContext(r.Context(), `SELECT COUNT(*) FROM tenant_bootstrap_requests WHERE organization_id=?`, id).Scan(&bootstrapCount); err != nil {
+		httpx.Fail(w, apperr.Database)
+		return
+	}
+	nextStatus := "PENDING"
+	if bootstrapCount > 0 {
+		nextStatus = "BOOTSTRAPPING"
+	}
 	// Credentials are encrypted at rest. The dedicated provisioner migrates and
 	// validates the target schema before the tenant can become READY/ACTIVE.
-	_, err = tx.ExecContext(r.Context(), `UPDATE organizations SET database_mode='DEDICATED',database_config_ciphertext=?,provisioning_status='PENDING',provisioning_error=NULL,is_active=0,lifecycle_status='PROVISIONING',updated_at=UTC_TIMESTAMP() WHERE id=?`, ciphertext, id)
+	_, err = tx.ExecContext(r.Context(), `UPDATE organizations SET database_mode='DEDICATED',database_config_ciphertext=?,provisioning_status=?,provisioning_error=NULL,is_active=0,lifecycle_status='PROVISIONING',updated_at=UTC_TIMESTAMP() WHERE id=?`, ciphertext, nextStatus, id)
 	if err != nil {
 		httpx.Fail(w, apperr.Database)
 		return
 	}
-	if err = h.auditTx(r.Context(), tx, claims.UserID, "organization.database_configured", "organization", id, map[string]any{"database_mode": oldMode, "provisioning_status": oldProv}, map[string]any{"database_mode": "DEDICATED", "provisioning_status": "PENDING"}); err != nil {
+	if err = h.auditTx(r.Context(), tx, claims.UserID, "organization.database_configured", "organization", id, map[string]any{"database_mode": oldMode, "provisioning_status": oldProv}, map[string]any{"database_mode": "DEDICATED", "provisioning_status": nextStatus}); err != nil {
 		httpx.Fail(w, apperr.Database)
 		return
 	}
@@ -657,21 +752,21 @@ func (h *Handler) SetDatabaseConfig(w http.ResponseWriter, r *http.Request) {
 	if h.tenantPools != nil {
 		h.tenantPools.Invalidate(id)
 	}
-	httpx.OK(w, map[string]any{"id": id, "database_mode": "DEDICATED", "provisioning_status": "PENDING", "message": "Database credentials validated and encrypted. Tenant will activate only after migrations and schema validation succeed."})
+	httpx.OK(w, map[string]any{"id": id, "database_mode": "DEDICATED", "provisioning_status": nextStatus, "message": "Database credentials validated and encrypted. Tenant will activate only after bootstrap, migrations and schema validation succeed."})
 }
 
 // hasTenantOperationalData prevents an unsafe shared-to-dedicated switch.
 // Current provisioning migrates identity and role grants, but deliberately does
 // not pretend to move historical gatepass, visitor, audit, or notification data.
 func (h *Handler) hasTenantOperationalData(ctx context.Context, orgID int64) (bool, error) {
-	tables := []string{
-		"sites", "gates", "visitors", "pass_types", "gatepasses",
-		"approval_requests", "approval_workflows", "credentials", "check_ins",
-		"check_outs", "audit_logs", "notifications", "organization_settings",
+	if checker, ok := h.tenantPools.(interface {
+		HasOperationalData(context.Context, int64) (bool, error)
+	}); ok {
+		return checker.HasOperationalData(ctx, orgID)
 	}
+	// Compatibility for legacy single-database tests/development.
+	tables := []string{"sites", "gates", "visitors", "pass_types", "gatepasses", "approval_requests", "approval_workflows", "credentials", "check_ins", "check_outs", "audit_logs", "notifications", "organization_settings"}
 	for _, table := range tables {
-		// Table names are a compile-time allow-list; only the organization ID is
-		// parameterized. Every table in this list has organization_id.
 		query := "SELECT COUNT(*) FROM " + table + " WHERE organization_id=?"
 		var count int64
 		if err := h.db.QueryRowContext(ctx, query, orgID).Scan(&count); err != nil {
@@ -697,7 +792,18 @@ func (h *Handler) validateDedicatedTarget(ctx context.Context, orgID int64, dsn 
 		return err
 	}
 	if strings.EqualFold(target.DBName, centralName) {
-		return errors.New("dedicated database cannot be the central platform database")
+		return errors.New("dedicated database cannot be the platform control-plane database")
+	}
+	if sharedNamer, ok := h.tenantPools.(interface {
+		SharedDatabaseName(context.Context) (string, error)
+	}); ok {
+		sharedName, nameErr := sharedNamer.SharedDatabaseName(ctx)
+		if nameErr != nil {
+			return nameErr
+		}
+		if strings.EqualFold(target.DBName, sharedName) {
+			return errors.New("dedicated database cannot be the shared tenant database")
+		}
 	}
 	rows, err := h.db.QueryContext(ctx, `SELECT id,database_config_ciphertext FROM organizations WHERE id<>? AND database_mode='DEDICATED' AND database_config_ciphertext IS NOT NULL AND database_config_ciphertext<>''`, orgID)
 	if err != nil {
@@ -798,7 +904,7 @@ func (h *Handler) auditTx(ctx context.Context, tx *sql.Tx, actor int64, action, 
 func (h *Handler) MigrationStatus(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
 	defer cancel()
-	report, err := migrations.Status(ctx, h.db)
+	report, err := platformmigrations.Status(ctx, h.db)
 	if err != nil {
 		log.Printf("platform migration status failed: %v", err)
 		httpx.Fail(w, apperr.Database)
@@ -906,7 +1012,7 @@ func (h *Handler) RunMigrations(w http.ResponseWriter, r *http.Request) {
 
 	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
 	defer cancel()
-	before, err := migrations.Status(ctx, h.db)
+	before, err := platformmigrations.Status(ctx, h.db)
 	if err != nil {
 		log.Printf("platform migration preflight failed: %v", err)
 		httpx.Fail(w, apperr.Database)
@@ -1063,10 +1169,10 @@ func (h *Handler) executeMigrationRun(runID string, actorID int64, databaseName 
 		return
 	}
 
-	runErr := migrations.ApplyEmbedded(ctx, h.db)
+	runErr := platformmigrations.ApplyEmbedded(ctx, h.db)
 	finishCtx, finishCancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer finishCancel()
-	report, statusErr := migrations.Status(finishCtx, h.db)
+	report, statusErr := platformmigrations.Status(finishCtx, h.db)
 	if statusErr != nil {
 		log.Printf("migration run %s status refresh failed: %v", runID, statusErr)
 	}
@@ -1212,15 +1318,15 @@ type scanner interface{ Scan(...any) error }
 func scanOrg(s scanner) (map[string]any, error) {
 	var id int64
 	var name, slug, lifecycle, mode, prov string
-	var active bool
+	var active, databaseConfigured bool
 	var errorText sql.NullString
 	var provisioned, suspended sql.NullTime
 	var created, updated time.Time
-	err := s.Scan(&id, &name, &slug, &active, &lifecycle, &mode, &prov, &errorText, &provisioned, &suspended, &created, &updated)
+	err := s.Scan(&id, &name, &slug, &active, &lifecycle, &mode, &prov, &databaseConfigured, &errorText, &provisioned, &suspended, &created, &updated)
 	if err != nil {
 		return nil, err
 	}
-	out := map[string]any{"id": id, "name": name, "slug": slug, "is_active": active, "lifecycle_status": lifecycle, "database_mode": mode, "provisioning_status": prov, "created_at": created, "updated_at": updated}
+	out := map[string]any{"id": id, "name": name, "slug": slug, "is_active": active, "lifecycle_status": lifecycle, "database_mode": mode, "provisioning_status": prov, "database_configured": databaseConfigured, "created_at": created, "updated_at": updated}
 	if errorText.Valid {
 		out["provisioning_error"] = errorText.String
 	}

@@ -95,6 +95,9 @@ export default function CreateTenantModal({ onClose, onSuccess }: CreateTenantMo
               <option value="SHARED">Shared</option>
               <option value="DEDICATED">Dedicated</option>
             </select>
+            {formData.database_mode === 'DEDICATED' && (
+              <p style={{ fontSize: '0.75rem', color: '#6b7280', marginTop: '0.4rem' }}>After creating the tenant, open its details and configure a dedicated MySQL database. The tenant stays inactive until provisioning succeeds.</p>
+            )}
           </div>
 
           <div style={{ borderTop: '1px solid #e5e7eb', paddingTop: '1rem', marginTop: '1rem', marginBottom: '1rem' }}>

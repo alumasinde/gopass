@@ -30,9 +30,9 @@ func main() {
 	if len(password) < 8 {
 		fatal(errors.New("PLATFORM_ADMIN_PASSWORD must be at least 8 characters"))
 	}
-	dsn := config.DSN()
+	dsn := config.PlatformDSN()
 	if dsn == "" {
-		fatal(errors.New("configure DB_DSN or DB_NAME/DB_* first"))
+		fatal(errors.New("configure PLATFORM_DB_DSN first (or DB_DSN for local legacy development)"))
 	}
 	db, err := sql.Open("mysql", dsn)
 	if err != nil {

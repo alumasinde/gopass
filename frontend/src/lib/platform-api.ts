@@ -18,7 +18,8 @@ export interface Organization {
   is_active: boolean;
   lifecycle_status: 'ACTIVE' | 'SUSPENDED' | 'DEPROVISIONED' | 'PROVISIONING';
   database_mode: 'SHARED' | 'DEDICATED';
-  provisioning_status: 'PENDING' | 'READY' | 'FAILED' | 'BLOCKED';
+  provisioning_status: 'BOOTSTRAPPING' | 'PENDING' | 'READY' | 'FAILED' | 'BLOCKED';
+  database_configured?: boolean;
   provisioning_error?: string;
   provisioned_at?: string;
   suspended_at?: string;
@@ -109,8 +110,9 @@ export const platformOrganizations = {
     await api.post(`/api/v1/platform/organizations/${id}/deprovision`);
   },
 
-  retryProvisioning: async (id: number): Promise<void> => {
-    await api.post(`/api/v1/platform/organizations/${id}/provision/retry`);
+  retryProvisioning: async (id: number): Promise<{ id: number; previous_id?: number; provisioning_status?: string; message?: string }> => {
+    const response = await api.post<Envelope<{ id: number; previous_id?: number; provisioning_status?: string; message?: string }>>(`/api/v1/platform/organizations/${id}/provision/retry`);
+    return response.data.data;
   },
 
   setDatabaseConfig: async (id: number, dsn: string): Promise<void> => {

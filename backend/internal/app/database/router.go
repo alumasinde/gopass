@@ -33,20 +33,64 @@ type tenantConn struct {
 // central DB holds platform metadata and shared tenants; dedicated tenants are
 // routed only when their central lifecycle says ACTIVE/READY.
 type Router struct {
-	central *sql.DB
-	key     []byte
-	mu      sync.Mutex
-	tenants map[int64]tenantConn
+	platform *sql.DB
+	central  *sql.DB
+	key      []byte
+	mu       sync.Mutex
+	tenants  map[int64]tenantConn
 }
 
-func NewRouter(central *sql.DB) *Router {
-	return &Router{central: central, key: keyFromEnv(os.Getenv("PLATFORM_DB_ENCRYPTION_KEY")), tenants: make(map[int64]tenantConn)}
+func NewRouter(platform *sql.DB, shared ...*sql.DB) *Router {
+	central := platform
+	if len(shared) > 0 && shared[0] != nil {
+		central = shared[0]
+	}
+	return &Router{platform: platform, central: central, key: keyFromEnv(os.Getenv("PLATFORM_DB_ENCRYPTION_KEY")), tenants: make(map[int64]tenantConn)}
 }
 
 // CentralHandle exposes the platform metadata database only to explicitly
 // constructed control-plane code (e.g. resolving an organization before login).
 // Tenant modules must use Router and a tenant-bound context.
-func (r *Router) CentralHandle() Handle { return &Static{DB: r.central} }
+func (r *Router) CentralHandle() Handle { return &Static{DB: r.platform} }
+
+// SharedDatabase exposes the shared tenant pool to the lifecycle provisioner,
+// not to HTTP handlers. Platform metadata remains on the separate platform pool.
+func (r *Router) SharedDatabase() *sql.DB { return r.central }
+
+// AllocateOrganizationID reserves an organization ID inside the caller's
+// platform transaction. It advances beyond IDs already present in both the
+// platform registry and the shared tenant schema, and serializes concurrent
+// allocations through a locked sequence row.
+func (r *Router) AllocateOrganizationID(ctx context.Context, tx *sql.Tx) (int64, error) {
+	if tx == nil {
+		return 0, errors.New("platform transaction is required")
+	}
+	var sharedMax int64
+	if err := r.central.QueryRowContext(ctx, `SELECT COALESCE(MAX(id),0) FROM organizations`).Scan(&sharedMax); err != nil {
+		return 0, fmt.Errorf("read shared tenant organization ID range: %w", err)
+	}
+	var platformMax int64
+	if err := tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(id),0) FROM organizations`).Scan(&platformMax); err != nil {
+		return 0, fmt.Errorf("read platform organization ID range: %w", err)
+	}
+	var next int64
+	if err := tx.QueryRowContext(ctx, `SELECT next_value FROM platform_id_sequences WHERE sequence_name='organization' FOR UPDATE`).Scan(&next); err != nil {
+		return 0, fmt.Errorf("lock organization ID sequence (apply platform migrations first): %w", err)
+	}
+	if min := sharedMax + 1; next < min {
+		next = min
+	}
+	if min := platformMax + 1; next < min {
+		next = min
+	}
+	if next < 1 {
+		return 0, errors.New("organization ID sequence is invalid")
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE platform_id_sequences SET next_value=?,updated_at=UTC_TIMESTAMP() WHERE sequence_name='organization'`, next+1); err != nil {
+		return 0, fmt.Errorf("advance organization ID sequence: %w", err)
+	}
+	return next, nil
+}
 
 func keyFromEnv(value string) []byte {
 	value = strings.TrimSpace(value)
@@ -70,7 +114,7 @@ func (r *Router) resolve(ctx context.Context) (*sql.DB, error) {
 	var active bool
 	var lifecycle, mode, provision string
 	var ciphertext sql.NullString
-	err = r.central.QueryRowContext(ctx, `SELECT is_active,lifecycle_status,database_mode,provisioning_status,database_config_ciphertext FROM organizations WHERE id=?`, orgID).Scan(&active, &lifecycle, &mode, &provision, &ciphertext)
+	err = r.platform.QueryRowContext(ctx, `SELECT is_active,lifecycle_status,database_mode,provisioning_status,database_config_ciphertext FROM organizations WHERE id=?`, orgID).Scan(&active, &lifecycle, &mode, &provision, &ciphertext)
 	if err != nil {
 		return nil, fmt.Errorf("%w: organization metadata: %v", ErrTenantUnavailable, err)
 	}
@@ -216,7 +260,7 @@ func (r *Router) ProvisionDedicated(ctx context.Context, orgID int64) error {
 		}
 	}
 	var name, slug, ciphertext string
-	if err := r.central.QueryRowContext(ctx, `SELECT name,slug,database_config_ciphertext FROM organizations WHERE id=? AND database_mode='DEDICATED'`, orgID).Scan(&name, &slug, &ciphertext); err != nil {
+	if err := r.platform.QueryRowContext(ctx, `SELECT name,slug,database_config_ciphertext FROM organizations WHERE id=? AND database_mode='DEDICATED'`, orgID).Scan(&name, &slug, &ciphertext); err != nil {
 		return err
 	}
 	if strings.TrimSpace(ciphertext) == "" {
@@ -235,9 +279,16 @@ func (r *Router) ProvisionDedicated(ctx context.Context, orgID int64) error {
 		return err
 	}
 	if strings.EqualFold(cfg.DBName, centralName) {
-		return errors.New("dedicated database cannot be the central platform database")
+		return errors.New("dedicated database cannot be the shared tenant database")
 	}
-	otherRows, err := r.central.QueryContext(ctx, `SELECT id,database_config_ciphertext FROM organizations WHERE id<>? AND database_mode='DEDICATED' AND database_config_ciphertext IS NOT NULL AND database_config_ciphertext<>''`, orgID)
+	var platformName string
+	if err := r.platform.QueryRowContext(ctx, `SELECT DATABASE()`).Scan(&platformName); err != nil {
+		return err
+	}
+	if strings.EqualFold(cfg.DBName, platformName) {
+		return errors.New("dedicated database cannot be the platform control-plane database")
+	}
+	otherRows, err := r.platform.QueryContext(ctx, `SELECT id,database_config_ciphertext FROM organizations WHERE id<>? AND database_mode='DEDICATED' AND database_config_ciphertext IS NOT NULL AND database_config_ciphertext<>''`, orgID)
 	if err != nil {
 		return err
 	}
@@ -407,8 +458,11 @@ func (r *Router) ProvisionDedicated(ctx context.Context, orgID int64) error {
 	if err = tx.Commit(); err != nil {
 		return err
 	}
+	if err = r.CleanupSharedTenantIdentity(ctx, orgID); err != nil {
+		return fmt.Errorf("dedicated database is ready but temporary shared identity cleanup failed: %w", err)
+	}
 	// Close this provisioning connection; the router lazily opens and caches a
-	// fresh pool after the central lifecycle transaction marks the tenant READY.
+	// fresh pool after the platform lifecycle transaction marks the tenant READY.
 	return nil
 }
 
@@ -548,8 +602,145 @@ func nullInt(v sql.NullInt64) any {
 	return nil
 }
 
+// BootstrapTenantIdentity creates the initial organization/user/role records in
+// the shared tenant schema. The platform stores only a short-lived, hashed
+// bootstrap request so provisioning can recover after a process restart.
+func (r *Router) BootstrapTenantIdentity(ctx context.Context, orgID int64, name, slug, mode, firstName, lastName, email, passwordHash string) error {
+	tx, err := r.central.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var existingSlug string
+	err = tx.QueryRowContext(ctx, `SELECT slug FROM organizations WHERE id=? FOR UPDATE`, orgID).Scan(&existingSlug)
+	if err != nil && err != sql.ErrNoRows {
+		return err
+	}
+	if errors.Is(err, sql.ErrNoRows) {
+		if _, err = tx.ExecContext(ctx, `INSERT INTO organizations(id,name,slug,is_active,lifecycle_status,database_mode,provisioning_status,created_at,updated_at) VALUES(?,?,?,0,'PROVISIONING',?,'PROVISIONING',UTC_TIMESTAMP(),UTC_TIMESTAMP())`, orgID, name, slug, mode); err != nil {
+			return err
+		}
+	} else if existingSlug != slug {
+		return fmt.Errorf("tenant identity row %d belongs to a different slug", orgID)
+	} else {
+		if _, err = tx.ExecContext(ctx, `UPDATE organizations SET name=?,slug=?,is_active=0,lifecycle_status='PROVISIONING',database_mode=?,provisioning_status='PROVISIONING',updated_at=UTC_TIMESTAMP() WHERE id=?`, name, slug, mode, orgID); err != nil {
+			return err
+		}
+	}
+	if _, err = tx.ExecContext(ctx, `INSERT IGNORE INTO roles(organization_id,name,code,is_system,created_at,updated_at) VALUES(?, 'Organization Administrator','organization_admin',1,UTC_TIMESTAMP(),UTC_TIMESTAMP())`, orgID); err != nil {
+		return err
+	}
+	var roleID int64
+	if err = tx.QueryRowContext(ctx, `SELECT id FROM roles WHERE organization_id=? AND code='organization_admin'`, orgID).Scan(&roleID); err != nil {
+		return err
+	}
+	if _, err = tx.ExecContext(ctx, `INSERT IGNORE INTO users(organization_id,first_name,last_name,email,password_hash,is_active,created_at,updated_at) VALUES(?,?,?,?,?,1,UTC_TIMESTAMP(),UTC_TIMESTAMP())`, orgID, firstName, lastName, email, passwordHash); err != nil {
+		return err
+	}
+	var userID int64
+	if err = tx.QueryRowContext(ctx, `SELECT id FROM users WHERE organization_id=? AND email=?`, orgID, email).Scan(&userID); err != nil {
+		return err
+	}
+	if _, err = tx.ExecContext(ctx, `INSERT IGNORE INTO role_permissions(role_id,permission_id) SELECT ?,id FROM permissions`, roleID); err != nil {
+		return err
+	}
+	if _, err = tx.ExecContext(ctx, `INSERT IGNORE INTO user_roles(user_id,role_id,organization_id,scope_type,is_active,created_at,updated_at) VALUES(?,?,?,'ORGANIZATION',1,UTC_TIMESTAMP(),UTC_TIMESTAMP())`, userID, roleID, orgID); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// CleanupSharedTenantIdentity removes the temporary shared-schema identity
+// after a dedicated tenant has been provisioned. It is intentionally skipped
+// for legacy single-schema development mode where platform and shared DB are
+// the same pool.
+func (r *Router) CleanupSharedTenantIdentity(ctx context.Context, orgID int64) error {
+	if r.central == r.platform {
+		return nil
+	}
+	tx, err := r.central.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err = tx.ExecContext(ctx, `DELETE FROM refresh_tokens WHERE organization_id=?`, orgID); err != nil {
+		return err
+	}
+	if _, err = tx.ExecContext(ctx, `DELETE FROM user_roles WHERE organization_id=?`, orgID); err != nil {
+		return err
+	}
+	if _, err = tx.ExecContext(ctx, `DELETE FROM users WHERE organization_id=?`, orgID); err != nil {
+		return err
+	}
+	if _, err = tx.ExecContext(ctx, `DELETE FROM roles WHERE organization_id=?`, orgID); err != nil {
+		return err
+	}
+	if _, err = tx.ExecContext(ctx, `DELETE FROM organizations WHERE id=? AND database_mode='DEDICATED'`, orgID); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// ProvisionShared mirrors the platform tenant registry record into the shared
+// tenant schema. The row is required by tenant-schema foreign keys; the platform
+// registry remains authoritative for lifecycle and database routing.
+func (r *Router) ProvisionShared(ctx context.Context, orgID int64) error {
+	var name, slug string
+	if err := r.platform.QueryRowContext(ctx, `SELECT name,slug FROM organizations WHERE id=? AND database_mode='SHARED'`, orgID).Scan(&name, &slug); err != nil {
+		return err
+	}
+	tx, err := r.central.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var existingSlug string
+	err = tx.QueryRowContext(ctx, `SELECT slug FROM organizations WHERE id=? FOR UPDATE`, orgID).Scan(&existingSlug)
+	if err != nil && err != sql.ErrNoRows {
+		return err
+	}
+	if errors.Is(err, sql.ErrNoRows) {
+		if _, err = tx.ExecContext(ctx, `INSERT INTO organizations(id,name,slug,is_active,lifecycle_status,database_mode,provisioning_status,created_at,updated_at) VALUES(?,?,?,1,'ACTIVE','SHARED','READY',UTC_TIMESTAMP(),UTC_TIMESTAMP())`, orgID, name, slug); err != nil {
+			return err
+		}
+	} else if existingSlug != slug {
+		return errors.New("shared tenant organization ID belongs to a different slug")
+	} else {
+		if _, err = tx.ExecContext(ctx, `UPDATE organizations SET name=?,slug=?,is_active=1,lifecycle_status='ACTIVE',database_mode='SHARED',provisioning_status='READY',updated_at=UTC_TIMESTAMP() WHERE id=?`, name, slug, orgID); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+// HasOperationalData checks only the shared tenant data plane before a tenant
+// can be switched to dedicated storage. Platform registry tables are never
+// mistaken for operational tenant records.
+func (r *Router) HasOperationalData(ctx context.Context, orgID int64) (bool, error) {
+	tables := []string{"sites", "gates", "visitors", "pass_types", "gatepasses", "approval_requests", "approval_workflows", "credentials", "check_ins", "check_outs", "audit_logs", "notifications", "organization_settings"}
+	for _, table := range tables {
+		var count int64
+		query := "SELECT COUNT(*) FROM " + table + " WHERE organization_id=?"
+		if err := r.central.QueryRowContext(ctx, query, orgID).Scan(&count); err != nil {
+			return false, err
+		}
+		if count > 0 {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// SharedDatabaseName returns only the schema name, never credentials, for
+// dedicated-target validation.
+func (r *Router) SharedDatabaseName(ctx context.Context) (string, error) {
+	var name string
+	err := r.central.QueryRowContext(ctx, `SELECT DATABASE()`).Scan(&name)
+	return name, err
+}
+
 func (r *Router) TenantIDs(ctx context.Context) ([]int64, error) {
-	rows, err := r.central.QueryContext(ctx, `SELECT id FROM organizations WHERE is_active=1 AND lifecycle_status='ACTIVE' AND provisioning_status='READY' ORDER BY id`)
+	rows, err := r.platform.QueryContext(ctx, `SELECT id FROM organizations WHERE is_active=1 AND lifecycle_status='ACTIVE' AND provisioning_status='READY' ORDER BY id`)
 	if err != nil {
 		return nil, err
 	}
@@ -607,7 +798,7 @@ func (r *Router) PingContext(ctx context.Context) error {
 func (r *Router) RevokeSessions(ctx context.Context, orgID int64) error {
 	var mode string
 	var encrypted sql.NullString
-	if err := r.central.QueryRowContext(ctx, `SELECT database_mode,database_config_ciphertext FROM organizations WHERE id=?`, orgID).Scan(&mode, &encrypted); err != nil {
+	if err := r.platform.QueryRowContext(ctx, `SELECT database_mode,database_config_ciphertext FROM organizations WHERE id=?`, orgID).Scan(&mode, &encrypted); err != nil {
 		return err
 	}
 	if mode == "SHARED" {
@@ -675,8 +866,15 @@ func (r *Router) Close() error {
 		}
 		delete(r.tenants, id)
 	}
-	if err := r.central.Close(); err != nil && first == nil {
-		first = err
+	if r.central != nil {
+		if err := r.central.Close(); err != nil && first == nil {
+			first = err
+		}
+	}
+	if r.platform != nil && r.platform != r.central {
+		if err := r.platform.Close(); err != nil && first == nil {
+			first = err
+		}
 	}
 	return first
 }
