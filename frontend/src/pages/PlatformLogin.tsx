@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import type { FormEvent } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import { usePlatformAuth } from '../contexts/PlatformAuthContext';
 import { apiErrorMessage } from '../lib/api';
 
@@ -87,6 +87,9 @@ export default function PlatformLogin() {
             {isLoading ? 'Signing in...' : 'Sign In'}
           </button>
         </form>
+        <p style={{ marginTop: '1.25rem', textAlign: 'center', fontSize: '0.85rem', color: '#64748b' }}>
+          Need your company workspace? <Link to="/tenant/login" style={{ color: '#087e8b', fontWeight: 700 }}>Tenant sign in</Link>
+        </p>
       </div>
     </div>
   );
