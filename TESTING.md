@@ -1,37 +1,54 @@
-# Testing
+# Testing and Security Regression Suite
 
-## Unit/API
-Run `go test ./...` after dependencies are available. The suite should include service, handler, authorization, tenant-isolation and workflow integration tests.
+Run these commands from the repository root after dependencies are available:
 
-## MySQL integration
-Use a dedicated database and DSN; never point tests at development/production data. Example:
+```powershell
+go test ./...
+go test -race ./...
+go vet ./...
+```
+
+On Windows, the race detector requires CGO and a working C compiler. For the MSYS2 UCRT64 toolchain:
+
+```powershell
+$env:CGO_ENABLED = "1"
+$env:CC = "C:\msys64\ucrt64\bin\gcc.exe"
+$env:PATH = "C:\msys64\ucrt64\bin;" + $env:PATH
+go test -race ./...
+```
+
+## Unit coverage added
+
+- `internal/app/http/middleware`: malformed bearer headers, inactive users, revoked sessions, lookup failures, authenticated context propagation, security headers and CORS origin rejection.
+- `internal/platform/rbac`: fail-closed behavior without claims, organization-claim/context mismatch, invalid scope types and invalid site IDs.
+- `internal/platform/ratelimit`: per-email and per-IP limits, successful-login reset behavior and concurrent access.
+- `internal/platform/audit`: authenticated tenant/actor precedence and JSON serialization of old/new values.
+- `internal/modules/approvals`: unauthenticated approval actions are denied before database access.
+- `internal/modules/checkins`: unauthenticated check-in denial and credential hash properties.
+- `internal/modules/checkouts`: unauthenticated check-out denial.
+- `internal/modules/credentials`: unauthenticated credential verification denial and token hash properties.
+- `internal/modules/users`: refresh-token rotation, concurrent refresh use, logout/session revocation and login rate-limiter initialization.
+- `internal/modules/gatepasses`: state-transition matrix.
+
+## MySQL integration tests still required
+
+The unit suite does not replace integration tests against a dedicated MySQL test database. Do not run security tests against production data. Apply migrations to an isolated database and verify these scenarios through the HTTP API and database:
+
+1. Organization A cannot read, update, delete, approve, check in, check out, or issue/verify credentials for Organization B resources.
+2. A site-scoped user cannot act on another site; a gate-scoped user cannot act on another gate.
+3. `Require` does not grant organization-wide permission based solely on site/gate scope.
+4. Role assignments reject users, roles, sites, or gates owned by another organization and reject missing/mixed scope identifiers.
+5. Logout immediately invalidates an existing access token; refresh-token replay fails; only one concurrent refresh succeeds.
+6. Disabling a user or organization invalidates active sessions.
+7. Role/permission changes and authentication/session events create expected audit records with the correct organization and actor.
+8. Concurrent check-in/check-out/approval requests do not create duplicate records or skip valid workflow transitions.
+
+Example dedicated test DSN (never use a production DSN):
 
 ```powershell
 $env:DB_DSN='testuser:testpass@tcp(127.0.0.1:3306)/gopass_test?parseTime=true&charset=utf8mb4'
+go run ./cmd/migrate up
 go test ./... -count=1
 ```
-## Migrations
-Apply the schema to the test database before running integration tests:
 
-```powershell
-go run ./cmd/migrate up
-```
-
-## Required authorization cases
-- Tenant A cannot read Tenant B resources.
-- Security Officer cannot manage roles/users.
-- Receptionist cannot perform security overrides.
-- Organization Administrator cannot access platform-only operations.
-- Site-scoped users cannot read resources outside their site.
-- Gate-scoped users cannot operate another gate.
-
-## Session revocation and scope regression cases
-- Login issues access and refresh tokens with the same session ID.
-- Refresh rotation returns both tokens, keeps the same session ID, and consumes the old refresh token exactly once.
-- Logout rejects a stale/already-consumed refresh token and revokes the current session; an existing access token from that session must then receive `401`.
-- Disabling a user or organization invalidates existing access tokens and prevents refresh.
-- `Require` must not accept permissions granted only at `SITE` or `GATE` scope.
-- `RequireWithScope` must allow only organization/site/gate resources that belong to the caller's organization and match the assigned scope.
-- Assigning a role with `SITE` scope requires a valid same-organization `site_id`; `GATE` scope requires a valid same-organization `gate_id`; invalid/mixed scope combinations must fail.
-- Role assignment must not create a user-role row if the user belongs to another organization.
-- Role/permission assignments and removals, login, refresh, and logout should create audit rows with organization and actor where available.
+The current automated unit tests do not automatically create or migrate this database; the DSN commands are preparation guidance for the integration-test phase.
