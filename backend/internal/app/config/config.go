@@ -108,20 +108,32 @@ func csv(s string) []string {
 }
 
 func DSN() string {
+	var c *mysql.Config
 	if v := strings.TrimSpace(os.Getenv("DB_DSN")); v != "" {
-		return v
+		parsed, err := mysql.ParseDSN(v)
+		if err != nil {
+			// Preserve the original value so the normal database startup path
+			// can report the DSN parsing error with its usual context.
+			return v
+		}
+		c = parsed
+	} else {
+		name := strings.TrimSpace(os.Getenv("DB_NAME"))
+		if name == "" {
+			return ""
+		}
+		c = mysql.NewConfig()
+		c.User = env("DB_USER", "root")
+		c.Passwd = os.Getenv("DB_PASSWORD")
+		c.Net = "tcp"
+		c.Addr = net.JoinHostPort(env("DB_HOST", "127.0.0.1"), env("DB_PORT", "3306"))
+		c.DBName = name
+		c.Collation = "utf8mb4_unicode_ci"
 	}
-	name := strings.TrimSpace(os.Getenv("DB_NAME"))
-	if name == "" {
-		return ""
-	}
-	c := mysql.NewConfig()
-	c.User = env("DB_USER", "root")
-	c.Passwd = os.Getenv("DB_PASSWORD")
-	c.Net = "tcp"
-	c.Addr = net.JoinHostPort(env("DB_HOST", "127.0.0.1"), env("DB_PORT", "3306"))
-	c.DBName = name
+	// GoPass stores DATETIME values as UTC wall-clock values. MySQL DATETIME
+	// has no timezone metadata, so force the driver to interpret parsed values
+	// as UTC instead of the machine's local timezone (e.g. Africa/Nairobi).
 	c.ParseTime = true
-	c.Collation = "utf8mb4_unicode_ci"
+	c.Loc = time.UTC
 	return c.FormatDSN()
 }

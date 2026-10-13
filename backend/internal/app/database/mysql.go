@@ -3,15 +3,22 @@ package database
 import (
 	"context"
 	"database/sql"
-	_ "github.com/go-sql-driver/mysql"
 	"time"
+
+	mysql "github.com/go-sql-driver/mysql"
 )
 
 func Open(ctx context.Context, dsn string) (*sql.DB, error) {
 	if dsn == "" {
 		return nil, ErrConfig
 	}
-	db, e := sql.Open("mysql", dsn)
+	cfg, e := mysql.ParseDSN(dsn)
+	if e != nil {
+		return nil, e
+	}
+	cfg.ParseTime = true
+	cfg.Loc = time.UTC
+	db, e := sql.Open("mysql", cfg.FormatDSN())
 	if e != nil {
 		return nil, e
 	}

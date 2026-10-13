@@ -79,6 +79,7 @@ func newHarness(t *testing.T) *harness {
 		t.Fatalf("refusing to run destructive integration tests against database %q: database name must end in _test", cfg.DBName)
 	}
 	cfg.ParseTime = true
+	cfg.Loc = time.UTC
 	cfg.MultiStatements = true
 	db, err := sql.Open("mysql", cfg.FormatDSN())
 	if err != nil {

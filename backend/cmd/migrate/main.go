@@ -143,6 +143,7 @@ func loadConfig() (*mysql.Config, error) {
 	// what the user's DSN says.
 	cfg.MultiStatements = true
 	cfg.ParseTime = true
+	cfg.Loc = time.UTC
 
 	return cfg, nil
 }

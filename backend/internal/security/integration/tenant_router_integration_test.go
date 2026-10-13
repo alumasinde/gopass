@@ -95,6 +95,7 @@ func TestDedicatedTenantRouterMigratesAndIsolatesTenantSchema(t *testing.T) {
 	}
 	cfg.MultiStatements = true
 	cfg.ParseTime = true
+	cfg.Loc = time.UTC
 	target, err := sql.Open("mysql", cfg.FormatDSN())
 	if err != nil {
 		t.Fatal(err)

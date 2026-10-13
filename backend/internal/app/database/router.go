@@ -102,6 +102,7 @@ func (r *Router) dedicated(ctx context.Context, orgID int64, ciphertext string) 
 	}
 	cfg.MultiStatements = true
 	cfg.ParseTime = true
+	cfg.Loc = time.UTC
 	db, err := sql.Open("mysql", cfg.FormatDSN())
 	if err != nil {
 		return nil, fmt.Errorf("%w: open tenant DB: %v", ErrTenantUnavailable, err)
@@ -161,6 +162,7 @@ func ValidateDSN(ctx context.Context, dsn string) error {
 	}
 	cfg.MultiStatements = true
 	cfg.ParseTime = true
+	cfg.Loc = time.UTC
 	db, err := sql.Open("mysql", cfg.FormatDSN())
 	if err != nil {
 		return err
@@ -260,6 +262,7 @@ func (r *Router) ProvisionDedicated(ctx context.Context, orgID int64) error {
 	otherRows.Close()
 	cfg.MultiStatements = true
 	cfg.ParseTime = true
+	cfg.Loc = time.UTC
 	db, err := sql.Open("mysql", cfg.FormatDSN())
 	if err != nil {
 		return err
@@ -620,6 +623,7 @@ func (r *Router) RevokeSessions(ctx context.Context, orgID int64) error {
 	}
 	cfg.MultiStatements = true
 	cfg.ParseTime = true
+	cfg.Loc = time.UTC
 	db, err := sql.Open("mysql", cfg.FormatDSN())
 	if err != nil {
 		return err
