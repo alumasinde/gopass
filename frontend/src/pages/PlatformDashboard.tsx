@@ -5,6 +5,7 @@ import { platformOrganizations } from '../lib/platform-api';
 import type { Organization } from '../lib/platform-api';
 import TenantList from '../components/TenantList';
 import CreateTenantModal from '../components/CreateTenantModal';
+import { apiErrorMessage } from '../lib/api';
 
 export default function PlatformDashboard() {
   const [organizations, setOrganizations] = useState<Organization[]>([]);
@@ -21,7 +22,7 @@ export default function PlatformDashboard() {
       const data = await platformOrganizations.list();
       setOrganizations(data);
     } catch (err: any) {
-      setError(err.response?.data?.message || 'Failed to fetch organizations');
+      setError(apiErrorMessage(err, 'Failed to fetch organizations'));
     } finally {
       setIsLoading(false);
     }

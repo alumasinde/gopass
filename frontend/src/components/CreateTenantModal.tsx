@@ -2,6 +2,7 @@ import { useState } from 'react';
 import type { FormEvent } from 'react';
 import { platformOrganizations } from '../lib/platform-api';
 import type { CreateOrganizationInput } from '../lib/platform-api';
+import { apiErrorMessage } from '../lib/api';
 
 interface CreateTenantModalProps {
   onClose: () => void;
@@ -30,7 +31,7 @@ export default function CreateTenantModal({ onClose, onSuccess }: CreateTenantMo
       await platformOrganizations.create(formData);
       onSuccess();
     } catch (err: any) {
-      setError(err.response?.data?.message || 'Failed to create tenant');
+      setError(apiErrorMessage(err, 'Failed to create tenant'));
     } finally {
       setIsLoading(false);
     }

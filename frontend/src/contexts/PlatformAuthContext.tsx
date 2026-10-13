@@ -25,12 +25,17 @@ export const PlatformAuthProvider = ({ children }: { children: ReactNode }) => {
 
   useEffect(() => {
     const token = localStorage.getItem('platform_access_token');
-    setIsAuthenticated(!!token);
+    const valid = !!token && token !== 'undefined' && token !== 'null';
+    if (!valid) localStorage.removeItem('platform_access_token');
+    setIsAuthenticated(valid);
     setIsLoading(false);
   }, []);
 
   const login = async (email: string, password: string) => {
     const response = await platformAuth.login(email, password);
+    if (!response?.access_token) {
+      throw new Error('Login response did not include an access token');
+    }
     localStorage.setItem('platform_access_token', response.access_token);
     setIsAuthenticated(true);
   };

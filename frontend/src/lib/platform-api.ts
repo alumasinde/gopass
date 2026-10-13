@@ -1,4 +1,5 @@
 import api from './api';
+import type { Envelope } from './api';
 
 export interface PlatformAdmin {
   id: number;
@@ -50,11 +51,11 @@ export interface CreateAdminInput {
 // Auth endpoints
 export const platformAuth = {
   login: async (email: string, password: string): Promise<LoginResponse> => {
-    const response = await api.post<LoginResponse>('/api/v1/platform/auth/login', {
+    const response = await api.post<Envelope<LoginResponse>>('/api/v1/platform/auth/login', {
       email,
       password,
     });
-    return response.data;
+    return response.data.data;
   },
 
   logout: async (): Promise<void> => {
@@ -65,13 +66,13 @@ export const platformAuth = {
 // Admin management endpoints
 export const platformAdmins = {
   list: async (): Promise<PlatformAdmin[]> => {
-    const response = await api.get<PlatformAdmin[]>('/api/v1/platform/admins');
-    return response.data;
+    const response = await api.get<Envelope<PlatformAdmin[]>>('/api/v1/platform/admins');
+    return response.data.data;
   },
 
   create: async (data: CreateAdminInput): Promise<PlatformAdmin> => {
-    const response = await api.post<PlatformAdmin>('/api/v1/platform/admins', data);
-    return response.data;
+    const response = await api.post<Envelope<PlatformAdmin>>('/api/v1/platform/admins', data);
+    return response.data.data;
   },
 
   suspend: async (id: number): Promise<void> => {
@@ -82,18 +83,18 @@ export const platformAdmins = {
 // Organization management endpoints
 export const platformOrganizations = {
   list: async (): Promise<Organization[]> => {
-    const response = await api.get<Organization[]>('/api/v1/platform/organizations');
-    return response.data;
+    const response = await api.get<Envelope<Organization[]>>('/api/v1/platform/organizations');
+    return response.data.data;
   },
 
   get: async (id: number): Promise<Organization> => {
-    const response = await api.get<Organization>(`/api/v1/platform/organizations/${id}`);
-    return response.data;
+    const response = await api.get<Envelope<Organization>>(`/api/v1/platform/organizations/${id}`);
+    return response.data.data;
   },
 
   create: async (data: CreateOrganizationInput): Promise<Organization> => {
-    const response = await api.post<Organization>('/api/v1/platform/organizations', data);
-    return response.data;
+    const response = await api.post<Envelope<Organization>>('/api/v1/platform/organizations', data);
+    return response.data.data;
   },
 
   suspend: async (id: number): Promise<void> => {

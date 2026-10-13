@@ -2,6 +2,7 @@ import { useState } from 'react';
 import type { FormEvent } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { usePlatformAuth } from '../contexts/PlatformAuthContext';
+import { apiErrorMessage } from '../lib/api';
 
 export default function PlatformLogin() {
   const [email, setEmail] = useState('');
@@ -20,7 +21,7 @@ export default function PlatformLogin() {
       await login(email, password);
       navigate('/platform/dashboard');
     } catch (err: any) {
-      setError(err.response?.data?.message || 'Login failed. Please check your credentials.');
+      setError(apiErrorMessage(err, 'Login failed. Please check your credentials.'));
     } finally {
       setIsLoading(false);
     }
