@@ -52,3 +52,62 @@ go test ./... -count=1
 ```
 
 The current automated unit tests do not automatically create or migrate this database; the DSN commands are preparation guidance for the integration-test phase.
+
+## MySQL-backed security integration tests
+
+The `internal/security/integration` suite runs the real GoPass HTTP router against MySQL. It is deliberately behind the `integration` build tag and refuses to run against a database whose name does not end in `_test`. It creates uniquely named organizations and deletes only the fixture rows it creates.
+
+### 1. Create and migrate a dedicated test database
+
+Do not point these tests at development, staging, or production data. Create a database such as `gopass_test` and grant the local test account access to it. In PowerShell, set the DSN to that database:
+
+```powershell
+$env:DB_DSN = "gopass_user:YOUR_TEST_PASSWORD@tcp(127.0.0.1:3306)/gopass_test?parseTime=true"
+$env:GOPASS_TEST_DSN = $env:DB_DSN
+
+go run ./cmd/migrate status
+go run ./cmd/migrate up
+```
+
+The test harness checks that migration `0007_revocable_sessions.sql` is recorded before it runs. Existing migration files are not modified by this test suite.
+
+### 2. Run integration security tests
+
+```powershell
+go test -tags=integration -v ./internal/security/integration
+```
+
+Or run all unit and integration tests, then static analysis:
+
+```powershell
+go test -tags=integration ./...
+go test -tags=integration -race ./...
+go vet -tags=integration ./...
+```
+
+The race test on Windows requires CGO and a working compiler. With the MSYS2 UCRT64 toolchain used for this project:
+
+```powershell
+$env:CGO_ENABLED = "1"
+$env:CC = "C:\msys64\ucrt64\bin\gcc.exe"
+$env:PATH = "C:\msys64\ucrt64\bin;" + $env:PATH
+go test -tags=integration -race ./...
+```
+
+Unset the test DSN after testing if you do not want later commands to use it:
+
+```powershell
+Remove-Item Env:GOPASS_TEST_DSN -ErrorAction SilentlyContinue
+Remove-Item Env:DB_DSN -ErrorAction SilentlyContinue
+```
+
+### 3. Security assertions covered
+
+- Cross-organization site read, update, and delete attempts return `404`; the foreign row remains unchanged and active in MySQL.
+- Site-scoped roles can access gatepasses at their assigned site, but not at another site.
+- Gate-scoped roles can access gatepasses at their assigned gate, but not at another gate, including a different gate on the same site.
+- Logout revokes the refresh-token session and the previously issued access token is immediately rejected by the protected API.
+- Refresh-token rotation returns a new access/refresh pair; replaying the old refresh token is rejected and the replacement remains usable.
+- Role assignment/removal and permission assignment/removal produce persistent `audit_logs` rows attributed to the organization and actor.
+
+These tests use real MySQL rows and the actual route/middleware/handler stack. They complement the fast unit tests; do not replace them.

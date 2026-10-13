@@ -82,3 +82,32 @@ func TestRecordUsesAuthenticatedTenantAndActor(t *testing.T) {
 		}
 	}
 }
+
+func TestRecordStoresMissingSnapshotsAsSQLNull(t *testing.T) {
+	capture := &execCapture{}
+	driverName := fmt.Sprintf("gopass-audit-null-capture-test-%d", auditDriverSequence.Add(1))
+	sql.Register(driverName, captureDriver{capture: capture})
+	db, err := sql.Open(driverName, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	New(db, slog.New(slog.NewTextHandler(io.Discard, nil))).Record(context.Background(), Entry{
+		OrganizationID: 22,
+		ActorUserID:    11,
+		Action:         "role.permission_assigned",
+		ResourceType:   "role",
+		ResourceID:     5,
+		NewValues:      map[string]any{"permission_id": int64(7)},
+	})
+	if len(capture.args) != 7 {
+		t.Fatalf("got %d args, want 7", len(capture.args))
+	}
+	if got := capture.args[5].Value; got != nil {
+		t.Fatalf("old_values=%#v, want SQL NULL (nil)", got)
+	}
+	if _, ok := capture.args[6].Value.([]byte); !ok {
+		t.Fatalf("new_values has type %T, want encoded JSON []byte", capture.args[6].Value)
+	}
+}

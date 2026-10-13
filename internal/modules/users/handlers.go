@@ -79,13 +79,17 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	org, e := tenancy.ID(r.Context())
-	if e != nil {
+	org, orgErr := tenancy.ID(r.Context())
+	if orgErr != nil {
+		// Public login requests do not have an authenticated tenant context yet,
+		// so resolve the tenant from the explicit organization ID or slug.
 		org = in.OrganizationID
 		if org < 1 && in.OrganizationSlug != "" {
-			e = h.db.QueryRowContext(r.Context(), `SELECT id FROM organizations WHERE slug=? AND is_active=1`, in.OrganizationSlug).Scan(&org)
+			if lookupErr := h.db.QueryRowContext(r.Context(), `SELECT id FROM organizations WHERE slug=? AND is_active=1`, in.OrganizationSlug).Scan(&org); lookupErr != nil {
+				org = 0
+			}
 		}
-		if org < 1 || e != nil {
+		if org < 1 {
 			httpx.Fail(w, apperr.InvalidRequest.With("organization_id or organization_slug is required"))
 			return
 		}
