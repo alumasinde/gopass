@@ -50,8 +50,8 @@ export function TenantAuthProvider({ children }: { children: ReactNode }) {
       const slug = localStorage.getItem('tenant_organization_slug') || '';
       setOrganization((current) => current ?? {
         id: me.organization_id ?? 0,
-        name: slug || 'Tenant workspace',
-        slug,
+        name: me.organization_name || slug || 'Tenant workspace',
+        slug: me.organization_slug || slug,
         is_active: me.is_active !== false,
       });
     }
@@ -78,7 +78,7 @@ export function TenantAuthProvider({ children }: { children: ReactNode }) {
         } catch {
           if (cancelled) return;
           const slug = localStorage.getItem('tenant_organization_slug') || '';
-          setOrganization({ id: me.organization_id ?? 0, name: slug || 'Tenant workspace', slug, is_active: me.is_active !== false });
+          setOrganization({ id: me.organization_id ?? 0, name: me.organization_name || slug || 'Tenant workspace', slug: me.organization_slug || slug, is_active: me.is_active !== false });
         }
       })
       .catch(() => {

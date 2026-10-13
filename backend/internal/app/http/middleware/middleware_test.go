@@ -123,3 +123,31 @@ func TestCORSRejectsUnlistedOriginPreflight(t *testing.T) {
 		t.Fatalf("untrusted origin was reflected: %q", got)
 	}
 }
+
+func TestCORSAllowsTenantLocalhostSubdomainPattern(t *testing.T) {
+	h := CORS([]string{"http://localhost:5173", "http://*.localhost:5173"})(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	r := httptest.NewRequest(http.MethodOptions, "/api", nil)
+	r.Header.Set("Origin", "http://acme-security.localhost:5173")
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, r)
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("status=%d, want 204", w.Code)
+	}
+	if got := w.Header().Get("Access-Control-Allow-Origin"); got != "http://acme-security.localhost:5173" {
+		t.Fatalf("allow origin=%q", got)
+	}
+}
+
+func TestCORSWildcardDoesNotAllowNestedOrLookalikeHosts(t *testing.T) {
+	for _, origin := range []string{
+		"http://evil.acme.localhost:5173",
+		"http://acme.localhost.evil.example:5173",
+		"http://localhost:5173",
+	} {
+		if originMatches("http://*.localhost:5173", origin) {
+			t.Errorf("wildcard unexpectedly matched %q", origin)
+		}
+	}
+}

@@ -1,8 +1,8 @@
 import { useState, useEffect } from 'react';
 import type { FormEvent } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { platformOrganizations } from '../lib/platform-api';
-import type { Organization } from '../lib/platform-api';
+import { platformOrganizations, platformTenantDomains } from '../lib/platform-api';
+import type { Organization, TenantDomain } from '../lib/platform-api';
 import { formatLocalDate } from '../lib/dateUtils';
 import { apiErrorMessage } from '../lib/api';
 
@@ -16,6 +16,12 @@ export default function TenantDetail() {
   const [savingDatabase, setSavingDatabase] = useState(false);
   const [databaseMessage, setDatabaseMessage] = useState('');
   const [databaseError, setDatabaseError] = useState('');
+  const [domains, setDomains] = useState<TenantDomain[]>([]);
+  const [domainInput, setDomainInput] = useState('');
+  const [domainLoading, setDomainLoading] = useState(false);
+  const [domainError, setDomainError] = useState('');
+  const [domainMessage, setDomainMessage] = useState('');
+  const [newDomainChallenge, setNewDomainChallenge] = useState<TenantDomain | null>(null);
 
   useEffect(() => {
     const fetchTenant = async () => {
@@ -34,6 +40,43 @@ export default function TenantDetail() {
 
     fetchTenant();
   }, [id]);
+
+  useEffect(() => {
+    if (!id) return;
+    let cancelled = false;
+    platformTenantDomains.list(Number(id))
+      .then((items) => { if (!cancelled) setDomains(Array.isArray(items) ? items : []); })
+      .catch((err) => { if (!cancelled) setDomainError(apiErrorMessage(err, 'Unable to load tenant domains. Apply platform migrations first if this is a new setup.')); });
+    return () => { cancelled = true; };
+  }, [id]);
+
+  const handleAddDomain = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!tenant || !domainInput.trim()) return;
+    setDomainLoading(true); setDomainError(''); setDomainMessage(''); setNewDomainChallenge(null);
+    try {
+      const created = await platformTenantDomains.create(tenant.id, domainInput.trim());
+      setDomainInput('');
+      setNewDomainChallenge(created);
+      setDomainMessage('Domain registered. Add the TXT verification record below, then verify it.');
+      setDomains((current) => [created, ...current.filter((item) => item.id !== created.id)]);
+    } catch (err: any) {
+      setDomainError(apiErrorMessage(err, 'Could not register domain.'));
+    } finally { setDomainLoading(false); }
+  };
+
+  const handleVerifyDomain = async (domainID: number) => {
+    if (!tenant) return;
+    setDomainLoading(true); setDomainError(''); setDomainMessage('');
+    try {
+      const updated = await platformTenantDomains.verify(tenant.id, domainID);
+      setDomains((current) => current.map((item) => item.id === domainID ? { ...item, ...updated } : item));
+      setDomainMessage(`${updated.domain} is verified and active.`);
+      setNewDomainChallenge(null);
+    } catch (err: any) {
+      setDomainError(apiErrorMessage(err, 'DNS verification failed. Confirm the TXT record has propagated.'));
+    } finally { setDomainLoading(false); }
+  };
 
   const handleSuspend = async () => {
     if (!tenant || !confirm('Are you sure you want to suspend this tenant?')) return;
@@ -214,6 +257,31 @@ export default function TenantDetail() {
           </form>
         </div>
       )}
+
+      <section style={{ backgroundColor: 'white', padding: '1.5rem', borderRadius: '8px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)', marginBottom: '2rem' }}>
+        <h3 style={{ fontSize: '1rem', fontWeight: 600, margin: '0 0 .4rem' }}>Tenant URLs & custom domains</h3>
+        <p style={{ color: '#6b7280', fontSize: '.875rem', marginTop: 0 }}>Local development URL: <code>http://{tenant.slug}.localhost:5173/tenant/login</code>. For a production custom domain, point DNS to your GoPass frontend and verify ownership with a TXT record.</p>
+        {domainError && <div role="alert" style={{ background: '#fee2e2', color: '#991b1b', padding: '.75rem', borderRadius: 6, marginBottom: '1rem' }}>{domainError}</div>}
+        {domainMessage && <div role="status" style={{ background: '#dcfce7', color: '#166534', padding: '.75rem', borderRadius: 6, marginBottom: '1rem' }}>{domainMessage}</div>}
+        <form onSubmit={handleAddDomain} style={{ display: 'flex', flexWrap: 'wrap', gap: '.6rem', marginBottom: '1rem' }}>
+          <input aria-label="Custom domain" value={domainInput} onChange={(event) => setDomainInput(event.target.value)} placeholder="visitors.example.com" required style={{ flex: '1 1 260px', minWidth: 0, padding: '.7rem', border: '1px solid #d1d5db', borderRadius: 6 }} />
+          <button type="submit" disabled={domainLoading} style={{ padding: '.7rem 1rem', background: '#087e8b', color: '#fff', border: 0, borderRadius: 6 }}>{domainLoading ? 'Saving…' : 'Add domain'}</button>
+        </form>
+        {newDomainChallenge?.verification_token && <div style={{ border: '1px solid #cbd5e1', background: '#f8fafc', padding: '1rem', borderRadius: 8, marginBottom: '1rem' }}>
+          <strong>DNS verification record</strong>
+          <p style={{ fontSize: '.8rem', color: '#475569' }}>Create this TXT record at your DNS provider. Wait for DNS propagation, then click Verify.</p>
+          <p><small>Host / Name</small><br /><code>{newDomainChallenge.verification_host || `_gopass-verification.${newDomainChallenge.domain}`}</code></p>
+          <p><small>TXT value</small><br /><code style={{ overflowWrap: 'anywhere' }}>{newDomainChallenge.verification_token}</code></p>
+          <button type="button" onClick={() => void handleVerifyDomain(newDomainChallenge.id)} disabled={domainLoading} style={{ padding: '.6rem .9rem', background: '#087e8b', color: '#fff', border: 0, borderRadius: 6 }}>Verify DNS now</button>
+        </div>}
+        {domains.length === 0 ? <p style={{ color: '#64748b', fontSize: '.85rem' }}>No custom domains registered.</p> : <div style={{ display: 'grid', gap: '.65rem' }}>
+          {domains.map((domain) => <div key={domain.id} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '.75rem', padding: '.8rem', border: '1px solid #e5e7eb', borderRadius: 8 }}>
+            <div><strong>{domain.domain}</strong><div style={{ fontSize: '.75rem', color: '#64748b', marginTop: '.25rem' }}>{domain.is_verified && domain.is_active ? 'Verified and active' : 'Pending DNS verification'}</div></div>
+            {!domain.is_verified && <button type="button" onClick={() => setNewDomainChallenge(domain)} style={{ padding: '.45rem .7rem', border: '1px solid #cbd5e1', background: '#fff', borderRadius: 6 }}>Show verification</button>}
+            {!domain.is_verified && newDomainChallenge?.id === domain.id && <button type="button" onClick={() => void handleVerifyDomain(domain.id)} disabled={domainLoading} style={{ padding: '.45rem .7rem', border: 0, background: '#087e8b', color: '#fff', borderRadius: 6 }}>Verify DNS</button>}
+          </div>)}
+        </div>}
+      </section>
 
       <div style={{ backgroundColor: 'white', padding: '1.5rem', borderRadius: '8px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)', marginBottom: '2rem' }}>
         <h3 style={{ fontSize: '1rem', fontWeight: '600', marginBottom: '1rem' }}>Timeline</h3>

@@ -43,8 +43,9 @@ func CORS(origins []string) func(http.Handler) http.Handler {
 			o := r.Header.Get("Origin")
 			ok := false
 			for _, x := range origins {
-				if x == o {
+				if originMatches(x, o) {
 					ok = true
+					break
 				}
 			}
 			if ok {
@@ -66,6 +67,31 @@ func CORS(origins []string) func(http.Handler) http.Handler {
 		})
 	}
 }
+
+// originMatches supports exact origins and a narrowly-scoped wildcard such as
+// http://*.localhost:5173. Wildcards match one subdomain label only.
+func originMatches(pattern, origin string) bool {
+	if pattern == origin {
+		return true
+	}
+	marker := "://*."
+	idx := strings.Index(pattern, marker)
+	if idx < 0 {
+		return false
+	}
+	scheme := pattern[:idx+3]
+	suffix := pattern[idx+4:]
+	if !strings.HasPrefix(origin, scheme) {
+		return false
+	}
+	host := strings.TrimPrefix(origin, scheme)
+	if !strings.HasSuffix(host, suffix) {
+		return false
+	}
+	label := strings.TrimSuffix(host, suffix)
+	return label != "" && !strings.Contains(label, ".") && !strings.ContainsAny(label, "/:@")
+}
+
 func Recover(l *slog.Logger) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

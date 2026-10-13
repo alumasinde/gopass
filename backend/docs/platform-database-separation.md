@@ -56,3 +56,13 @@ If a tenant created before this migration failed with `tenant identity row <id> 
 - Use separate DB accounts and least-privilege grants. The account used for provisioning may require broader privileges than the normal application account; do not use that provisioning account for tenant request queries.
 - Back up platform and tenant databases independently and test restores. Platform registry loss affects routing for all tenants.
 - Do not use a tenant-provided database name/DSN to select a connection. Database assignment is resolved from the trusted platform registry.
+
+
+## Tenant hostnames and custom domains
+
+- Local development uses the organization slug as the first label: `http://<slug>.localhost:5173/tenant/login`. Vite must listen on port 5173 and allow `.localhost` hostnames.
+- Backend CORS must include `http://*.localhost:5173` in development. Wildcard CORS matching is restricted to one hostname label; do not configure `*`.
+- Custom hostnames are registered in `platform_tenant_domains` (platform control plane). Platform Admin creates the record, publishes the generated TXT challenge, and activates the domain only after DNS TXT verification.
+- Public `GET /api/v1/tenant/resolve?host=<hostname>` returns the slug/name only for verified, active domains attached to an active and ready organization.
+- Tenant login sends both the slug and current hostname. The backend resolves organization identity from the platform registry and then authenticates against the assigned tenant data plane.
+- `GET /api/v1/auth/me` includes active permission codes, assigned role codes, and the organization display name/slug. The frontend uses these values to render permission-aware navigation and dashboard cards. API authorization remains the enforcement boundary.

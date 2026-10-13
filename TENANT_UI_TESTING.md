@@ -39,3 +39,26 @@ The dashboard requests the existing APIs directly. It does not add a fake dashbo
 ## Current scope
 
 This phase implements tenant sign-in/session handling and a read-only dashboard. Visitors, gatepasses, approvals and security desk navigation are intentionally marked as upcoming pages; their existing backend endpoints are already used for dashboard summaries. It does not change backend authorization or introduce new endpoints.
+
+
+## Tenant subdomains, custom domains and dynamic permissions
+
+### Local slug subdomain
+- Apply platform migrations: `go run ./cmd/platform-migrate up` from `backend`.
+- Add `http://*.localhost:5173` to `CORS_ALLOWED_ORIGINS` in `backend/.env` alongside the regular localhost origin.
+- Start Vite with `npm run dev`; it listens on `0.0.0.0:5173` and accepts `.localhost` hosts.
+- Open `http://<organization-slug>.localhost:5173/tenant/login`. The organization slug is derived from the hostname, so no slug field is shown.
+- Plain `http://localhost:5173/tenant/login` keeps the organization slug field for convenience.
+
+### Custom tenant domain
+- In Platform Admin, open a tenant's details and register a hostname such as `visitors.example.com`.
+- Add the TXT record shown by GoPass: host `_gopass-verification.visitors.example.com`, value the generated token.
+- After DNS has propagated, click **Verify DNS**. Only verified, active domains resolve to the tenant.
+- Point the domain's DNS and HTTPS certificate to your deployed frontend, and allow that exact HTTPS origin in backend `CORS_ALLOWED_ORIGINS`. `VITE_API_BASE_URL` should point at your backend API.
+- The DNS record verifies ownership; production deployment still needs a reverse proxy/hosting configuration for the custom hostname.
+
+### Dynamic permissions and data
+- `/api/v1/auth/me` returns the current user's active permission codes and role codes from assigned roles.
+- Tenant navigation and dashboard cards are shown according to those permission codes.
+- Dashboard values are fetched from the current authenticated tenant's API; unavailable/forbidden datasets display a visible state rather than being fabricated.
+- Backend authorization remains authoritative; hiding a UI action is not a replacement for API permission checks.

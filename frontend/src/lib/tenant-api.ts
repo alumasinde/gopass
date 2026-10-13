@@ -10,12 +10,17 @@ export interface TenantUser {
   last_name: string;
   email: string;
   is_active?: boolean;
+  permissions?: string[];
+  roles?: string[];
+  organization_name?: string;
+  organization_slug?: string;
 }
 export interface TenantOrganization {
   id: number;
   name: string;
   slug: string;
   is_active: boolean;
+  branding?: { logo_url?: string; primary_color?: string };
 }
 export interface TenantLoginResponse {
   user: TenantUser;
@@ -98,10 +103,22 @@ async function getData<T>(url: string): Promise<T> {
   return response.data.data;
 }
 
+async function getArrayData<T>(url: string): Promise<T[]> {
+  const value = await getData<unknown>(url);
+  if (Array.isArray(value)) return value as T[];
+  if (value && typeof value === 'object') {
+    const record = value as { data?: unknown; items?: unknown };
+    if (Array.isArray(record.data)) return record.data as T[];
+    if (Array.isArray(record.items)) return record.items as T[];
+  }
+  return [];
+}
+
 export const tenantAuthApi = {
   login: async (organizationSlug: string, email: string, password: string) => {
     const response = await tenantApi.post<Envelope<TenantLoginResponse>>('/api/v1/auth/login', {
       organization_slug: organizationSlug.trim().toLowerCase(),
+      tenant_host: window.location.hostname.toLowerCase(),
       email: email.trim().toLowerCase(),
       password,
     });
@@ -109,6 +126,10 @@ export const tenantAuthApi = {
   },
   me: () => getData<TenantUser>('/api/v1/auth/me'),
   organization: () => getData<TenantOrganization>('/api/v1/organization'),
+  resolveHost: async (host: string) => {
+    const response = await tenantApi.get<Envelope<{ slug: string; name: string }>>('/api/v1/tenant/resolve', { params: { host } });
+    return response.data.data;
+  },
   logout: async () => {
     const refreshToken = localStorage.getItem('tenant_refresh_token');
     if (refreshToken) await tenantApi.post('/api/v1/auth/logout', { refresh_token: refreshToken });
@@ -116,11 +137,11 @@ export const tenantAuthApi = {
 };
 
 export const tenantDashboardApi = {
-  visitors: () => getData<Visitor[]>('/api/v1/visitors/'),
-  gatepasses: () => getData<Gatepass[]>('/api/v1/gatepasses/'),
-  approvals: () => getData<ApprovalRequest[]>('/api/v1/approvals/'),
-  checkIns: () => getData<CheckIn[]>('/api/v1/check-ins/'),
-  checkOuts: () => getData<CheckOut[]>('/api/v1/check-outs/'),
+  visitors: () => getArrayData<Visitor>('/api/v1/visitors/'),
+  gatepasses: () => getArrayData<Gatepass>('/api/v1/gatepasses/'),
+  approvals: () => getArrayData<ApprovalRequest>('/api/v1/approvals/'),
+  checkIns: () => getArrayData<CheckIn>('/api/v1/check-ins/'),
+  checkOuts: () => getArrayData<CheckOut>('/api/v1/check-outs/'),
 };
 
 export default tenantApi;

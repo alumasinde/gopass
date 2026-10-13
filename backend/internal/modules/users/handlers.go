@@ -3,11 +3,13 @@ package users
 import (
 	"context"
 	"errors"
-	"github.com/alumasinde/gopass/internal/app/database"
 	"net"
 	"net/http"
+	"net/url"
+	"sort"
 	"strings"
 
+	"github.com/alumasinde/gopass/internal/app/database"
 	"github.com/alumasinde/gopass/internal/platform/apperr"
 	"github.com/alumasinde/gopass/internal/platform/audit"
 	"github.com/alumasinde/gopass/internal/platform/auth"
@@ -21,6 +23,7 @@ import (
 type Handler struct {
 	db          database.Handle
 	central     database.Handle
+	platform    database.Handle
 	authz       *rbac.Service
 	audit       *audit.Service
 	Service     *Service
@@ -47,8 +50,12 @@ func NewAuthService(db any, tokens *auth.Service, auditServices ...*audit.Servic
 	if len(auditServices) > 0 {
 		h.audit = auditServices[0]
 	}
+	h.platform = central
 	return h
 }
+
+// SetPlatformDB points public tenant resolution at the control-plane registry.
+func (h *Handler) SetPlatformDB(db any) { h.platform = database.Adapt(db) }
 
 func (h *Handler) registerRoutes(r chi.Router) {
 	r.Route("/users", func(r chi.Router) { r.Get("/", h.List); r.Post("/", h.Create); r.Get("/{id}", h.Get) })
@@ -59,6 +66,7 @@ func (h *Handler) registerAuthRoutes(r chi.Router) {
 	r.Post("/auth/login", h.Login)
 	r.Post("/auth/refresh", h.Refresh)
 	r.Post("/auth/logout", h.Logout)
+	r.Get("/tenant/resolve", h.ResolveTenantHost)
 }
 
 func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
@@ -67,6 +75,7 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 		Password         string `json:"password"`
 		OrganizationID   int64  `json:"organization_id"`
 		OrganizationSlug string `json:"organization_slug"`
+		TenantHost       string `json:"tenant_host"`
 	}
 	if httpx.Decode(r, &in) != nil || in.Email == "" || in.Password == "" {
 		httpx.Fail(w, apperr.InvalidRequest.With("email and password are required"))
@@ -89,9 +98,19 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 		// Public login requests do not have an authenticated tenant context yet,
 		// so resolve the tenant from the explicit organization ID or slug.
 		org = in.OrganizationID
+		registry := h.platform
+		if registry == nil {
+			registry = h.central
+		}
 		if org < 1 && in.OrganizationSlug != "" {
-			if lookupErr := h.central.QueryRowContext(r.Context(), `SELECT id FROM organizations WHERE slug=? AND is_active=1 AND lifecycle_status='ACTIVE' AND provisioning_status='READY'`, in.OrganizationSlug).Scan(&org); lookupErr != nil {
+			if lookupErr := registry.QueryRowContext(r.Context(), "SELECT id FROM organizations WHERE slug=? AND is_active=1 AND lifecycle_status='ACTIVE' AND provisioning_status='READY'", strings.TrimSpace(strings.ToLower(in.OrganizationSlug))).Scan(&org); lookupErr != nil {
 				org = 0
+			}
+		}
+		if org < 1 && strings.TrimSpace(in.TenantHost) != "" {
+			host, hostErr := normalizeTenantHost(in.TenantHost)
+			if hostErr == nil {
+				_ = registry.QueryRowContext(r.Context(), "SELECT d.organization_id FROM platform_tenant_domains d JOIN organizations o ON o.id=d.organization_id WHERE d.domain=? AND d.is_active=1 AND d.is_verified=1 AND o.is_active=1 AND o.lifecycle_status='ACTIVE' AND o.provisioning_status='READY'", host).Scan(&org)
 			}
 		}
 		if org < 1 {
@@ -101,7 +120,11 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var organizationActive bool
-	if err := h.central.QueryRowContext(r.Context(), `SELECT is_active FROM organizations WHERE id=? AND lifecycle_status='ACTIVE' AND provisioning_status='READY'`, org).Scan(&organizationActive); err != nil || !organizationActive {
+	registry := h.platform
+	if registry == nil {
+		registry = h.central
+	}
+	if err := registry.QueryRowContext(r.Context(), `SELECT is_active FROM organizations WHERE id=? AND lifecycle_status='ACTIVE' AND provisioning_status='READY'`, org).Scan(&organizationActive); err != nil || !organizationActive {
 		httpx.Fail(w, apperr.Unauthorized.With("invalid credentials"))
 		return
 	}
@@ -193,7 +216,109 @@ func (h *Handler) Me(w http.ResponseWriter, r *http.Request) {
 		httpx.Fail(w, apperr.NotFound)
 		return
 	}
-	httpx.OK(w, map[string]any{"id": user.ID, "organization_id": org, "first_name": user.FirstName, "last_name": user.LastName, "email": user.Email, "is_active": user.IsActive})
+	registry := h.platform
+	if registry == nil {
+		registry = h.central
+	}
+	var organizationName, organizationSlug string
+	if err := registry.QueryRowContext(r.Context(), `SELECT name,slug FROM organizations WHERE id=?`, org).Scan(&organizationName, &organizationSlug); err != nil {
+		httpx.Fail(w, apperr.Database)
+		return
+	}
+	permissions := make([]string, 0)
+	rows, queryErr := h.db.QueryContext(r.Context(), `SELECT DISTINCT p.code FROM user_roles ur JOIN users u ON u.id=ur.user_id AND u.organization_id=ur.organization_id JOIN roles ro ON ro.id=ur.role_id AND ro.organization_id=ur.organization_id JOIN role_permissions rp ON rp.role_id=ro.id JOIN permissions p ON p.id=rp.permission_id WHERE ur.user_id=? AND ur.organization_id=? AND ur.is_active=1 AND u.is_active=1 ORDER BY p.code`, claims.UserID, org)
+	if queryErr != nil {
+		httpx.Fail(w, apperr.Database)
+		return
+	}
+	for rows.Next() {
+		var code string
+		if err := rows.Scan(&code); err != nil {
+			rows.Close()
+			httpx.Fail(w, apperr.Database)
+			return
+		}
+		permissions = append(permissions, code)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		httpx.Fail(w, apperr.Database)
+		return
+	}
+	rows.Close()
+	roles := make([]string, 0)
+	roleRows, queryErr := h.db.QueryContext(r.Context(), `SELECT DISTINCT ro.code FROM user_roles ur JOIN roles ro ON ro.id=ur.role_id AND ro.organization_id=ur.organization_id WHERE ur.user_id=? AND ur.organization_id=? AND ur.is_active=1 ORDER BY ro.code`, claims.UserID, org)
+	if queryErr != nil {
+		httpx.Fail(w, apperr.Database)
+		return
+	}
+	for roleRows.Next() {
+		var code string
+		if err := roleRows.Scan(&code); err != nil {
+			roleRows.Close()
+			httpx.Fail(w, apperr.Database)
+			return
+		}
+		roles = append(roles, code)
+	}
+	if err := roleRows.Err(); err != nil {
+		roleRows.Close()
+		httpx.Fail(w, apperr.Database)
+		return
+	}
+	roleRows.Close()
+	sort.Strings(permissions)
+	sort.Strings(roles)
+	httpx.OK(w, map[string]any{"id": user.ID, "organization_id": org, "first_name": user.FirstName, "last_name": user.LastName, "email": user.Email, "is_active": user.IsActive, "organization_name": organizationName, "organization_slug": organizationSlug, "permissions": permissions, "roles": roles})
+}
+
+func normalizeTenantHost(raw string) (string, error) {
+	raw = strings.TrimSpace(strings.ToLower(raw))
+	if raw == "" || strings.Contains(raw, "://") || strings.ContainsAny(raw, "/?#@") {
+		return "", errors.New("invalid tenant host")
+	}
+	host := raw
+	if parsed, err := url.Parse("//" + raw); err == nil && parsed.Hostname() != "" {
+		host = parsed.Hostname()
+	}
+	host = strings.TrimSuffix(host, ".")
+	if host == "" || net.ParseIP(host) != nil || !strings.Contains(host, ".") {
+		return "", errors.New("invalid tenant host")
+	}
+	for _, part := range strings.Split(host, ".") {
+		if part == "" || len(part) > 63 {
+			return "", errors.New("invalid tenant host")
+		}
+		for _, r := range part {
+			if !(r >= 'a' && r <= 'z') && !(r >= '0' && r <= '9') && r != '-' {
+				return "", errors.New("invalid tenant host")
+			}
+		}
+		if part[0] == '-' || part[len(part)-1] == '-' {
+			return "", errors.New("invalid tenant host")
+		}
+	}
+	return host, nil
+}
+
+// ResolveTenantHost resolves a registered and verified custom domain to a ready tenant.
+func (h *Handler) ResolveTenantHost(w http.ResponseWriter, r *http.Request) {
+	host, err := normalizeTenantHost(r.URL.Query().Get("host"))
+	if err != nil {
+		httpx.Fail(w, apperr.InvalidRequest.With("valid host is required"))
+		return
+	}
+	registry := h.platform
+	if registry == nil {
+		registry = h.central
+	}
+	var slug, name string
+	err = registry.QueryRowContext(r.Context(), `SELECT o.slug,o.name FROM platform_tenant_domains d JOIN organizations o ON o.id=d.organization_id WHERE d.domain=? AND d.is_active=1 AND d.is_verified=1 AND o.is_active=1 AND o.lifecycle_status='ACTIVE' AND o.provisioning_status='READY'`, host).Scan(&slug, &name)
+	if err != nil {
+		httpx.Fail(w, apperr.NotFound.With("this domain is not connected to an active GoPass organization"))
+		return
+	}
+	httpx.OK(w, map[string]any{"slug": slug, "name": name})
 }
 
 func (h *Handler) List(w http.ResponseWriter, r *http.Request) {

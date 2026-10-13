@@ -121,6 +121,34 @@ export const platformOrganizations = {
 };
 
 
+
+export interface TenantDomain {
+  id: number;
+  organization_id?: number;
+  domain: string;
+  is_verified: boolean;
+  is_active: boolean;
+  created_at?: string;
+  updated_at?: string;
+  verification_host?: string;
+  verification_token?: string;
+}
+
+export const platformTenantDomains = {
+  list: async (organizationID: number): Promise<TenantDomain[]> => {
+    const response = await api.get<Envelope<TenantDomain[]>>(`/api/v1/platform/organizations/${organizationID}/domains`);
+    return response.data.data;
+  },
+  create: async (organizationID: number, domain: string): Promise<TenantDomain> => {
+    const response = await api.post<Envelope<TenantDomain>>(`/api/v1/platform/organizations/${organizationID}/domains`, { domain });
+    return response.data.data;
+  },
+  verify: async (organizationID: number, domainID: number): Promise<TenantDomain> => {
+    const response = await api.post<Envelope<TenantDomain>>(`/api/v1/platform/organizations/${organizationID}/domains/${domainID}/verify`);
+    return response.data.data;
+  },
+};
+
 export interface MigrationEntry {
   version: number;
   name: string;

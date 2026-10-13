@@ -7,6 +7,8 @@ export default function TenantLayout({ children }: { children: ReactNode }) {
   const { user, organization, logout } = useTenantAuth();
   const [signingOut, setSigningOut] = useState(false);
   const navigate = useNavigate();
+  const permissions = user?.permissions ?? [];
+  const canAny = (...codes: string[]) => permissions.some((code) => codes.includes(code));
   const initials = `${user?.first_name?.[0] ?? ''}${user?.last_name?.[0] ?? ''}`.toUpperCase() || 'U';
 
   const signOut = async () => {
@@ -24,9 +26,14 @@ export default function TenantLayout({ children }: { children: ReactNode }) {
         <div className="tenant-nav-label">WORKSPACE</div>
         <nav className="tenant-nav" aria-label="Tenant navigation">
           <NavLink to="/tenant/dashboard" className={({ isActive }) => `tenant-nav-item${isActive ? ' active' : ''}`}><span>▦</span> Overview</NavLink>
-          <button className="tenant-nav-item tenant-nav-disabled" type="button" title="Visitor pages are the next UI phase" disabled><span>♙</span> Visitors <small>Next</small></button>
-          <button className="tenant-nav-item tenant-nav-disabled" type="button" title="Gatepass pages are the next UI phase" disabled><span>▤</span> Gatepasses <small>Next</small></button>
-          <button className="tenant-nav-item tenant-nav-disabled" type="button" title="Approval pages are the next UI phase" disabled><span>✓</span> Approvals <small>Next</small></button>
+          {canAny('visitors.view', 'visitors.register') && <button className="tenant-nav-item tenant-nav-disabled" type="button" title="Visitor pages are not included in this UI phase" disabled><span>♙</span> Visitors <small>Next</small></button>}
+          {canAny('gatepasses.view', 'gatepasses.create') && <button className="tenant-nav-item tenant-nav-disabled" type="button" title="Gatepass pages are not included in this UI phase" disabled><span>▤</span> Gatepasses <small>Next</small></button>}
+          {canAny('approvals.view', 'approvals.approve') && <button className="tenant-nav-item tenant-nav-disabled" type="button" title="Approval pages are not included in this UI phase" disabled><span>✓</span> Approvals <small>Next</small></button>}
+          {canAny('checkins.view', 'checkins.perform', 'checkouts.view', 'checkouts.perform') && <button className="tenant-nav-item tenant-nav-disabled" type="button" title="Security desk pages are not included in this UI phase" disabled><span>⌖</span> Security desk <small>Next</small></button>}
+          {canAny('users.view', 'roles.view', 'sites.view', 'gates.view') && <div className="tenant-nav-label">ADMINISTRATION</div>}
+          {canAny('users.view') && <button className="tenant-nav-item tenant-nav-disabled" type="button" disabled title="User administration UI is not included in this phase"><span>♧</span> Users <small>Next</small></button>}
+          {canAny('roles.view') && <button className="tenant-nav-item tenant-nav-disabled" type="button" disabled title="Role administration UI is not included in this phase"><span>⚙</span> Roles & permissions <small>Next</small></button>}
+          {canAny('sites.view', 'gates.view') && <button className="tenant-nav-item tenant-nav-disabled" type="button" disabled title="Sites and gates UI is not included in this phase"><span>⌖</span> Sites & gates <small>Next</small></button>}
         </nav>
         <div className="tenant-sidebar-bottom"><div className="tenant-secure-label"><span /> Tenant session active</div><button className="tenant-signout" onClick={() => void signOut()} disabled={signingOut}><span>↪</span>{signingOut ? 'Signing out…' : 'Sign out'}</button></div>
       </aside>

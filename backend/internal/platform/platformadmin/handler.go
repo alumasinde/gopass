@@ -18,6 +18,7 @@ import (
 	"os"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -86,6 +87,9 @@ func (h *Handler) RegisterRoutes(r chi.Router) {
 		p.Patch("/platform/organizations/{id}/suspend", h.Suspend)
 		p.Patch("/platform/organizations/{id}/resume", h.Resume)
 		p.Post("/platform/organizations/{id}/database-config", h.SetDatabaseConfig)
+		p.Get("/platform/organizations/{id}/domains", h.ListTenantDomains)
+		p.Post("/platform/organizations/{id}/domains", h.CreateTenantDomain)
+		p.Post("/platform/organizations/{id}/domains/{domainID}/verify", h.VerifyTenantDomain)
 		p.Post("/platform/organizations/{id}/deprovision", h.Deprovision)
 		p.Post("/platform/organizations/{id}/provision/retry", h.RetryProvisioning)
 		p.Get("/platform/migrations", h.MigrationStatus)
@@ -320,6 +324,137 @@ func (h *Handler) SuspendAdmin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	httpx.OK(w, map[string]any{"id": id, "is_active": false})
+}
+
+var tenantDomainPattern = regexp.MustCompile(`^(?i)[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$`)
+
+func (h *Handler) ListTenantDomains(w http.ResponseWriter, r *http.Request) {
+	orgID, ok := pathID(w, r)
+	if !ok {
+		return
+	}
+	rows, err := h.db.QueryContext(r.Context(), `SELECT id,domain,verification_token,is_verified,is_active,created_at,updated_at FROM platform_tenant_domains WHERE organization_id=? ORDER BY id DESC`, orgID)
+	if err != nil {
+		httpx.Fail(w, apperr.Database)
+		return
+	}
+	defer rows.Close()
+	out := make([]map[string]any, 0)
+	for rows.Next() {
+		var id int64
+		var domain, token string
+		var verified, active bool
+		var created, updated time.Time
+		if err := rows.Scan(&id, &domain, &token, &verified, &active, &created, &updated); err != nil {
+			httpx.Fail(w, apperr.Database)
+			return
+		}
+		item := map[string]any{"id": id, "domain": domain, "is_verified": verified, "is_active": active, "created_at": created, "updated_at": updated}
+		if !verified {
+			item["verification_token"] = token
+			item["verification_host"] = "_gopass-verification." + domain
+		}
+		out = append(out, item)
+	}
+	if rows.Err() != nil {
+		httpx.Fail(w, apperr.Database)
+		return
+	}
+	httpx.OK(w, out)
+}
+
+func (h *Handler) CreateTenantDomain(w http.ResponseWriter, r *http.Request) {
+	orgID, ok := pathID(w, r)
+	if !ok {
+		return
+	}
+	var in struct {
+		Domain string `json:"domain"`
+	}
+	if httpx.Decode(r, &in) != nil {
+		httpx.Fail(w, apperr.InvalidJSON)
+		return
+	}
+	domain := strings.TrimSuffix(strings.ToLower(strings.TrimSpace(in.Domain)), ".")
+	if strings.Contains(domain, "://") || strings.ContainsAny(domain, "/?#:@") || !tenantDomainPattern.MatchString(domain) {
+		httpx.Fail(w, apperr.InvalidRequest.With("enter a valid hostname only, without scheme, port or path"))
+		return
+	}
+	var exists int
+	if err := h.db.QueryRowContext(r.Context(), `SELECT COUNT(*) FROM organizations WHERE id=?`, orgID).Scan(&exists); err != nil || exists == 0 {
+		httpx.Fail(w, apperr.NotFound.With("organization not found"))
+		return
+	}
+	randomBytes := make([]byte, 32)
+	if _, err := rand.Read(randomBytes); err != nil {
+		httpx.Fail(w, apperr.Internal)
+		return
+	}
+	token := base64.RawURLEncoding.EncodeToString(randomBytes)
+	res, err := h.db.ExecContext(r.Context(), `INSERT INTO platform_tenant_domains(organization_id,domain,verification_token,is_verified,is_active,created_at,updated_at) VALUES(?,?,?,0,0,UTC_TIMESTAMP(),UTC_TIMESTAMP())`, orgID, domain, token)
+	if err != nil {
+		httpx.Fail(w, apperr.Conflict.With("domain already registered or could not be added"))
+		return
+	}
+	id, err := res.LastInsertId()
+	if err != nil {
+		httpx.Fail(w, apperr.Database)
+		return
+	}
+	claims, _ := auth.From(r.Context())
+	if err := h.auditStandalone(r.Context(), claims.UserID, "platform.tenant_domain_added", "tenant_domain", id, nil, map[string]any{"organization_id": orgID, "domain": domain}); err != nil {
+		httpx.Fail(w, apperr.Database)
+		return
+	}
+	httpx.Created(w, map[string]any{"id": id, "organization_id": orgID, "domain": domain, "is_verified": false, "is_active": false, "verification_host": "_gopass-verification." + domain, "verification_token": token})
+}
+
+func (h *Handler) VerifyTenantDomain(w http.ResponseWriter, r *http.Request) {
+	orgID, ok := pathID(w, r)
+	if !ok {
+		return
+	}
+	domainID, err := strconv.ParseInt(chi.URLParam(r, "domainID"), 10, 64)
+	if err != nil || domainID < 1 {
+		httpx.Fail(w, apperr.InvalidID)
+		return
+	}
+	var domain, token string
+	err = h.db.QueryRowContext(r.Context(), `SELECT domain,verification_token FROM platform_tenant_domains WHERE id=? AND organization_id=?`, domainID, orgID).Scan(&domain, &token)
+	if errors.Is(err, sql.ErrNoRows) {
+		httpx.Fail(w, apperr.NotFound)
+		return
+	}
+	if err != nil {
+		httpx.Fail(w, apperr.Database)
+		return
+	}
+	txt, err := net.LookupTXT("_gopass-verification." + domain)
+	if err != nil {
+		httpx.Fail(w, apperr.Conflict.With("DNS TXT verification record was not found yet"))
+		return
+	}
+	verified := false
+	for _, value := range txt {
+		if strings.TrimSpace(value) == token {
+			verified = true
+			break
+		}
+	}
+	if !verified {
+		httpx.Fail(w, apperr.Conflict.With("DNS TXT record does not match the verification token"))
+		return
+	}
+	if _, err := h.db.ExecContext(r.Context(), `UPDATE platform_tenant_domains SET is_verified=1,is_active=1,updated_at=UTC_TIMESTAMP() WHERE id=? AND organization_id=?`, domainID, orgID); err != nil {
+		httpx.Fail(w, apperr.Database)
+		return
+	}
+	claims, _ := auth.From(r.Context())
+	if err := h.auditStandalone(r.Context(), claims.UserID, "platform.tenant_domain_verified", "tenant_domain", domainID, map[string]any{"is_verified": false, "is_active": false}, map[string]any{"domain": domain, "is_verified": true, "is_active": true}); err != nil {
+		httpx.Fail(w, apperr.Database)
+		return
+	}
+	httpx.OK(w, map[string]any{"id": domainID, "domain": domain, "is_verified": true, "is_active": true})
 }
 
 func (h *Handler) ListOrganizations(w http.ResponseWriter, r *http.Request) {
@@ -876,6 +1011,18 @@ func (h *Handler) decrypt(encoded string) (string, error) {
 	}
 	return string(plain), nil
 }
+func (h *Handler) auditStandalone(ctx context.Context, actor int64, action, resource string, id int64, oldv, newv any) error {
+	tx, err := h.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if err := h.auditTx(ctx, tx, actor, action, resource, id, oldv, newv); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
 func (h *Handler) auditTx(ctx context.Context, tx *sql.Tx, actor int64, action, resource string, id int64, oldv, newv any) error {
 	var oldJSON, newJSON any
 	var actorValue any

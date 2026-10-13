@@ -64,6 +64,7 @@ func New(cfg config.Config) (*App, error) {
 	az := rbac.New(router)
 	au := audit.New(router, l)
 	authHandler := users.NewAuthService(router, tokens, au)
+	authHandler.SetPlatformDB(platformDB)
 	usersHandler := users.NewHandler(router, az, au)
 	d := routes.Dependencies{Auth: authHandler, Authz: az, Audit: au, Users: usersHandler, Organizations: organizations.NewHandler(router, az, au), Roles: roles.NewHandler(router, az, au), Sites: sites.NewHandler(router, az, au), Gates: gates.NewHandler(router, az, au), Visitors: visitors.NewHandler(router, az, au), Gatepasses: gatepasses.NewHandler(router, az, au), Approvals: approvals.NewHandler(router, az, au), Credentials: credentials.NewHandler(router, az, au), Checkins: checkins.NewHandler(router, az, au), Checkouts: checkouts.NewHandler(router, az, au), PassTypes: passtypes.NewHandler(router, az, au), Notifications: notifications.NewHandler(router, az), Platform: platformadmin.New(platformDB, tokens, router)}
 	r := chi.NewRouter()

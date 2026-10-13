@@ -190,3 +190,39 @@ h1, h2, h3, h4 { font-family: Inter, ui-sans-serif, system-ui, sans-serif; color
 @media (max-width: 1100px) { .tenant-stat-grid { grid-template-columns: repeat(2,minmax(0,1fr)); }.tenant-dashboard-grid { grid-template-columns: 1fr; } }
 @media (max-width: 760px) { .tenant-auth-page { grid-template-columns: 1fr; }.tenant-auth-card { width: min(100% - 2rem,450px); padding: 2rem 0; }.tenant-auth-heading { margin-top: 2.2rem; }.tenant-auth-aside { min-height: auto; padding: 2.5rem 1.5rem 4rem; }.tenant-aside-content h2 { font-size: 2.8rem; }.tenant-aside-bottom { left: 1.5rem; bottom: 1.25rem; }.tenant-shell { flex-direction: column; }.tenant-sidebar { position: static; width: 100%; height: auto; flex-basis: auto; padding: .75rem; }.tenant-sidebar-brand { padding: .2rem .35rem .8rem; }.tenant-sidebar-org { margin: .7rem 0 .2rem; }.tenant-nav-label { display: none; }.tenant-nav { display: flex; overflow-x: auto; gap: .3rem; padding-top: .5rem; }.tenant-nav-item { width: auto; flex: 0 0 auto; padding: .6rem .7rem; white-space: nowrap; }.tenant-nav-disabled small { display: none; }.tenant-sidebar-bottom { display: flex; align-items: center; justify-content: space-between; gap: .75rem; margin-top: .7rem; padding: .65rem .2rem 0; }.tenant-secure-label { padding: .25rem; }.tenant-signout { width: auto; }.tenant-topbar { min-height: 68px; }.tenant-main-content { padding: 1rem; }.tenant-welcome-row { align-items: flex-start; flex-direction: column; }.tenant-outline-button { align-self: flex-start; }.tenant-stat-grid { gap: .7rem; }.tenant-stat-card { padding: .9rem; }.tenant-stat-icon { margin-bottom: .8rem; }.tenant-stat-value { font-size: 1.7rem; }.tenant-activity-item { grid-template-columns: 30px minmax(0,1fr); }.tenant-activity-item time { grid-column: 2; }.tenant-dashboard-footer { align-items: flex-start; flex-direction: column; } }
 @media (max-width: 400px) { .tenant-stat-grid { grid-template-columns: 1fr; }.tenant-topbar-user span { max-width: 130px; }.tenant-auth-footer { flex-direction: column; } }
+
+
+/* Visible recovery state instead of a blank white screen after a render failure. */
+.app-fatal-error { display: grid; place-items: center; min-height: 100vh; padding: 1.5rem; background: #f5f7fb; }
+.app-fatal-card { width: min(100%, 560px); padding: 2rem; border: 1px solid var(--color-border); border-radius: 16px; background: #fff; box-shadow: 0 16px 50px #14213d12; }
+.app-fatal-card h1 { margin: .5rem 0; font-size: 1.7rem; letter-spacing: -.04em; }
+.app-fatal-card p { color: #64748b; line-height: 1.65; }
+.app-fatal-card details { margin: 1rem 0; color: #475569; }
+.app-fatal-card pre { overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; padding: .75rem; border-radius: 8px; background: #f1f5f9; }
+.tenant-host-chip { display: inline-flex; align-items: center; gap: .55rem; margin-top: 1rem; padding: .5rem .7rem; border: 1px solid #d9e7ec; border-radius: 99px; background: #fff; color: #35516a; font-size: .75rem; font-weight: 750; overflow-wrap: anywhere; }
+.tenant-dashboard-grid:has(> :only-child) { grid-template-columns: minmax(0, 1fr); }
+@media (max-width: 960px) {
+  .tenant-auth-page { grid-template-columns: minmax(0, 1fr); }
+  .tenant-auth-aside { display: none; }
+  .tenant-stat-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .tenant-dashboard-grid { grid-template-columns: minmax(0, 1fr); }
+}
+@media (max-width: 760px) {
+  .tenant-shell { flex-direction: column; }
+  .tenant-sidebar { position: static; width: 100%; height: auto; flex-basis: auto; padding: .75rem; }
+  .tenant-sidebar-brand { padding: .25rem .35rem .75rem; }
+  .tenant-nav-label { margin-top: .8rem; }
+  .tenant-nav { display: flex; overflow-x: auto; gap: .35rem; padding-top: .35rem; }
+  .tenant-nav-item { width: auto; flex: 0 0 auto; min-height: 38px; padding: .55rem .65rem; white-space: nowrap; }
+  .tenant-nav-disabled small { display: none; }
+  .tenant-sidebar-bottom { display: flex; align-items: center; justify-content: space-between; gap: .75rem; margin-top: .65rem; padding: .65rem .2rem 0; }
+  .tenant-secure-label { padding: .25rem; }
+  .tenant-signout { width: auto; }
+  .tenant-welcome-row { align-items: flex-start; flex-direction: column; }
+}
+@media (max-width: 480px) {
+  .tenant-stat-grid { grid-template-columns: minmax(0, 1fr); }
+  .tenant-auth-card { width: min(100% - 2rem, 450px); }
+  .tenant-main-content { padding: .85rem; }
+  .tenant-topbar { padding: .75rem .85rem; }
+}

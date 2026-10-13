@@ -75,3 +75,10 @@ Run standard tests with `go test ./...`, integration tests with `go test -tags=i
 ## Platform Admin database migrations UI
 
 See [docs/migrations-ui.md](docs/migrations-ui.md). The UI reads actual embedded migration files and database history; execution is disabled by default and must be enabled temporarily with `PLATFORM_MIGRATIONS_UI_ENABLED=true` during an approved maintenance window. The UI targets only `PLATFORM_DB_DSN`; bootstrap it first with `go run ./cmd/platform-migrate up`. The shared tenant schema remains on `DB_DSN`. For existing single-database installs, run `go run ./cmd/platform-import` before applying tenant migration 0011, which removes the legacy platform-only tables. See [platform-database-separation.md](docs/platform-database-separation.md) for first-time setup and the safe legacy import procedure.
+
+
+### Tenant subdomain development
+
+For tenant-specific local URLs, set `CORS_ALLOWED_ORIGINS` in `backend/.env` to include both `http://localhost:5173` and `http://*.localhost:5173`. Run the frontend on Vite port 5173, then open `http://<tenant-slug>.localhost:5173/tenant/login`. The browser resolves `*.localhost` to loopback; the Vite config explicitly allows `.localhost` hostnames.
+
+For custom tenant domains, apply platform migrations and use the Platform Admin tenant detail page to register the hostname and verify the generated DNS TXT challenge. Add each deployed HTTPS frontend origin to `CORS_ALLOWED_ORIGINS` and configure `VITE_API_BASE_URL` for the deployed API. See `TENANT_UI_TESTING.md` at the repository root for the full walkthrough.
