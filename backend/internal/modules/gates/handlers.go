@@ -1,7 +1,6 @@
 package gates
 
 import (
-	"database/sql"
 	"errors"
 	"github.com/alumasinde/gopass/internal/platform/apperr"
 	"github.com/alumasinde/gopass/internal/platform/audit"
@@ -18,7 +17,7 @@ type Handler struct {
 	service *Service
 }
 
-func NewHandler(db *sql.DB, a *rbac.Service, au *audit.Service) *Handler {
+func NewHandler(db any, a *rbac.Service, au *audit.Service) *Handler {
 	return &Handler{a, au, NewService(db)}
 }
 func (h *Handler) registerRoutes(r chi.Router) {
@@ -31,30 +30,45 @@ func (h *Handler) registerRoutes(r chi.Router) {
 	})
 }
 func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
-	if h.authz.Require(r.Context(), "gates.view") != nil {
+	has, err := h.authz.HasPermissionAnyScope(r.Context(), "gates.view")
+	if err != nil {
+		httpx.Fail(w, apperr.Database)
+		return
+	}
+	if !has {
 		httpx.Fail(w, apperr.Forbidden)
 		return
 	}
-	o, e := tenancy.ID(r.Context())
-	if e != nil {
+	org, err := tenancy.ID(r.Context())
+	if err != nil {
 		httpx.Fail(w, apperr.TenantMissing)
 		return
 	}
-	v, e := h.service.List(r.Context(), o)
-	if e != nil {
+	all, ids, err := h.authz.AccessibleGates(r.Context(), "gates.view")
+	if err != nil {
+		httpx.Fail(w, apperr.Database)
+		return
+	}
+	var v []Gate
+	if all {
+		v, err = h.service.List(r.Context(), org)
+	} else {
+		v, err = h.service.ListScoped(r.Context(), org, ids)
+	}
+	if err != nil {
 		httpx.Fail(w, apperr.Database)
 		return
 	}
 	httpx.OK(w, v)
 }
 func (h *Handler) Get(w http.ResponseWriter, r *http.Request) {
-	if h.authz.Require(r.Context(), "gates.view") != nil {
-		httpx.Fail(w, apperr.Forbidden)
-		return
-	}
 	id, e := httpx.ID(chi.URLParam(r, "id"))
 	if e != nil {
 		httpx.Fail(w, apperr.InvalidID)
+		return
+	}
+	if e := h.authz.RequireWithScope(r.Context(), "gates.view", rbac.ScopeGate, id); e != nil {
+		httpx.Fail(w, apperr.NotFound)
 		return
 	}
 	o, _ := tenancy.ID(r.Context())
@@ -70,16 +84,16 @@ func (h *Handler) Get(w http.ResponseWriter, r *http.Request) {
 	httpx.OK(w, v)
 }
 func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
-	if h.authz.Require(r.Context(), "gates.create") != nil {
-		httpx.Fail(w, apperr.Forbidden)
-		return
-	}
 	var in struct {
 		SiteID     int64 `json:"site_id"`
 		Name, Code string
 	}
 	if httpx.Decode(r, &in) != nil {
 		httpx.Fail(w, apperr.InvalidJSON)
+		return
+	}
+	if e := h.authz.RequireWithScope(r.Context(), "gates.create", rbac.ScopeSite, in.SiteID); e != nil {
+		httpx.Fail(w, apperr.Forbidden)
 		return
 	}
 	o, _ := tenancy.ID(r.Context())
@@ -96,13 +110,13 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 	httpx.Created(w, v)
 }
 func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
-	if h.authz.Require(r.Context(), "gates.update") != nil {
-		httpx.Fail(w, apperr.Forbidden)
-		return
-	}
 	id, e := httpx.ID(chi.URLParam(r, "id"))
 	if e != nil {
 		httpx.Fail(w, apperr.InvalidID)
+		return
+	}
+	if e := h.authz.RequireWithScope(r.Context(), "gates.update", rbac.ScopeGate, id); e != nil {
+		httpx.Fail(w, apperr.NotFound)
 		return
 	}
 	var in struct {
@@ -115,6 +129,18 @@ func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	o, _ := tenancy.ID(r.Context())
+	current, currentErr := h.service.Get(r.Context(), o, id)
+	if currentErr != nil {
+		httpx.Fail(w, apperr.NotFound)
+		return
+	}
+	// A gate-scoped manager may edit its gate but cannot move it to another site.
+	if in.SiteID != current.SiteID {
+		if e := h.authz.RequireWithScope(r.Context(), "gates.update", rbac.ScopeSite, in.SiteID); e != nil {
+			httpx.Fail(w, apperr.Forbidden)
+			return
+		}
+	}
 	e = h.service.Update(r.Context(), o, id, in.SiteID, in.Name, in.Code, in.IsActive)
 	if errors.Is(e, ErrNotFound) {
 		httpx.Fail(w, apperr.NotFound)
@@ -132,13 +158,13 @@ func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
 	httpx.OK(w, map[string]any{"id": id})
 }
 func (h *Handler) Delete(w http.ResponseWriter, r *http.Request) {
-	if h.authz.Require(r.Context(), "gates.delete") != nil {
-		httpx.Fail(w, apperr.Forbidden)
-		return
-	}
 	id, e := httpx.ID(chi.URLParam(r, "id"))
 	if e != nil {
 		httpx.Fail(w, apperr.InvalidID)
+		return
+	}
+	if e := h.authz.RequireWithScope(r.Context(), "gates.delete", rbac.ScopeGate, id); e != nil {
+		httpx.Fail(w, apperr.NotFound)
 		return
 	}
 	o, _ := tenancy.ID(r.Context())

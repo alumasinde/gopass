@@ -7,6 +7,7 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"errors"
+	"github.com/alumasinde/gopass/internal/app/database"
 	"strings"
 	"time"
 
@@ -16,17 +17,17 @@ import (
 )
 
 type Service struct {
-	db    *sql.DB
+	db    database.Handle
 	authz *rbac.Service
 	audit *audit.Service
 }
 
-func NewService(db *sql.DB, a *rbac.Service, audits ...*audit.Service) *Service {
+func NewService(db any, a *rbac.Service, audits ...*audit.Service) *Service {
 	var au *audit.Service
 	if len(audits) > 0 {
 		au = audits[0]
 	}
-	return &Service{db: db, authz: a, audit: au}
+	return &Service{db: database.Adapt(db), authz: a, audit: au}
 }
 func token() string {
 	b := make([]byte, 16)
@@ -42,24 +43,41 @@ func hashToken(token string) string {
 	return hex.EncodeToString(h[:])
 }
 func (s *Service) List(c context.Context, o int64) ([]Credential, error) {
-	// Don't return token hashes in list for security
-	rows, e := s.db.QueryContext(c, `SELECT id,organization_id,gatepass_id,expires_at,is_revoked FROM credentials WHERE organization_id=? ORDER BY id DESC LIMIT 200`, o)
-	if e != nil {
-		return nil, e
+	all, gateIDs, err := s.authz.AccessibleGates(c, "credentials.view")
+	if err != nil {
+		return nil, err
+	}
+	if !all && len(gateIDs) == 0 {
+		return []Credential{}, nil
+	}
+	query := `SELECT c.id,c.organization_id,c.gatepass_id,c.expires_at,c.is_revoked,gp.gate_id FROM credentials c JOIN gatepasses gp ON gp.id=c.gatepass_id AND gp.organization_id=c.organization_id WHERE c.organization_id=?`
+	args := []any{o}
+	if !all {
+		ph := strings.TrimSuffix(strings.Repeat("?,", len(gateIDs)), ",")
+		query += ` AND gp.gate_id IN (` + ph + `)`
+		for _, id := range gateIDs {
+			args = append(args, id)
+		}
+	}
+	query += ` ORDER BY c.id DESC LIMIT 200`
+	rows, err := s.db.QueryContext(c, query, args...)
+	if err != nil {
+		return nil, err
 	}
 	defer rows.Close()
-	var x []Credential
+	var out []Credential
 	for rows.Next() {
 		var v Credential
 		var t time.Time
-		if e := rows.Scan(&v.ID, &v.OrganizationID, &v.GatepassID, &t, &v.IsRevoked); e != nil {
-			return nil, e
+		var gateID int64
+		if err := rows.Scan(&v.ID, &v.OrganizationID, &v.GatepassID, &t, &v.IsRevoked, &gateID); err != nil {
+			return nil, err
 		}
 		v.ExpiresAt = t.UTC().Format(time.RFC3339)
-		v.Token = "" // Never return token in list
-		x = append(x, v)
+		v.Token = ""
+		out = append(out, v)
 	}
-	return x, rows.Err()
+	return out, rows.Err()
 }
 func (s *Service) Issue(c context.Context, o, id int64) (*Credential, error) {
 	tx, e := s.db.BeginTx(c, nil)

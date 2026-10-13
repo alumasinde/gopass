@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"github.com/alumasinde/gopass/internal/app/database"
 	"log/slog"
 
 	"github.com/alumasinde/gopass/internal/platform/auth"
@@ -20,11 +21,11 @@ type Entry struct {
 }
 
 type Service struct {
-	DB  *sql.DB
+	DB  database.Handle
 	Log *slog.Logger
 }
 
-func New(db *sql.DB, l *slog.Logger) *Service { return &Service{DB: db, Log: l} }
+func New(db any, l *slog.Logger) *Service { return &Service{DB: database.Adapt(db), Log: l} }
 
 // RecordTx writes an audit event using the caller's transaction. A failed audit
 // insert is returned to the caller so the business change can be rolled back.

@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"github.com/alumasinde/gopass/internal/app/database"
 	"strings"
 	"time"
 
@@ -26,17 +27,17 @@ const (
 )
 
 type Service struct {
-	db    *sql.DB
+	db    database.Handle
 	authz *rbac.Service
 	audit *audit.Service
 }
 
-func NewService(db *sql.DB, a *rbac.Service, audits ...*audit.Service) *Service {
+func NewService(db any, a *rbac.Service, audits ...*audit.Service) *Service {
 	var au *audit.Service
 	if len(audits) > 0 {
 		au = audits[0]
 	}
-	return &Service{db: db, authz: a, audit: au}
+	return &Service{db: database.Adapt(db), authz: a, audit: au}
 }
 
 func (s *Service) List(c context.Context, o int64) ([]Gatepass, error) {
@@ -79,59 +80,7 @@ func (s *Service) List(c context.Context, o int64) ([]Gatepass, error) {
 }
 
 func (s *Service) accessibleGates(c context.Context, orgID int64) (all bool, ids []int64, err error) {
-	cl, ok := auth.From(c)
-	if !ok {
-		return false, nil, nil
-	}
-	rows, err := s.db.QueryContext(c, `SELECT ur.scope_type,ur.site_id,ur.gate_id FROM user_roles ur JOIN users u ON u.id=ur.user_id AND u.organization_id=ur.organization_id JOIN roles r ON r.id=ur.role_id AND r.organization_id=ur.organization_id JOIN role_permissions rp ON rp.role_id=ur.role_id JOIN permissions p ON p.id=rp.permission_id WHERE ur.user_id=? AND ur.organization_id=? AND ur.is_active=1 AND p.code='gatepasses.view'`, cl.UserID, orgID)
-	if err != nil {
-		return false, nil, err
-	}
-	defer rows.Close()
-	seen := map[int64]bool{}
-	var siteIDs []int64
-	for rows.Next() {
-		var scope string
-		var site, gate sql.NullInt64
-		if err := rows.Scan(&scope, &site, &gate); err != nil {
-			return false, nil, err
-		}
-		switch scope {
-		case rbac.ScopeOrganization:
-			return true, nil, nil
-		case rbac.ScopeGate:
-			if gate.Valid && !seen[gate.Int64] {
-				seen[gate.Int64] = true
-				ids = append(ids, gate.Int64)
-			}
-		case rbac.ScopeSite:
-			if site.Valid {
-				siteIDs = append(siteIDs, site.Int64)
-			}
-		}
-	}
-	if err := rows.Err(); err != nil {
-		return false, nil, err
-	}
-	for _, sid := range siteIDs {
-		gr, err := s.db.QueryContext(c, `SELECT id FROM gates WHERE organization_id=? AND site_id=?`, orgID, sid)
-		if err != nil {
-			return false, nil, err
-		}
-		for gr.Next() {
-			var g int64
-			if err := gr.Scan(&g); err != nil {
-				gr.Close()
-				return false, nil, err
-			}
-			if !seen[g] {
-				seen[g] = true
-				ids = append(ids, g)
-			}
-		}
-		gr.Close()
-	}
-	return false, ids, nil
+	return s.authz.AccessibleGates(c, "gatepasses.view")
 }
 func (s *Service) getUserAccessibleGates(c context.Context, orgID int64) ([]int64, error) {
 	// This would need to extract user ID from context and query their gate-scoped roles

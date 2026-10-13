@@ -7,4 +7,5 @@ type ApprovalRequest struct {
 	Status         string `json:"status"`
 	StepOrder      int    `json:"step_order"`
 	ActedBy        *int64 `json:"acted_by,omitempty"`
+	GateID         int64  `json:"-"`
 }

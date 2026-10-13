@@ -55,3 +55,14 @@ go vet ./...
 The code in this pass was formatted with `gofmt`. Automated Go tests could not be executed in the editing environment because Go dependencies were not cached and outbound access to `proxy.golang.org` was unavailable. Run the commands above in the development environment before merging or deploying.
 
 This pass tightens the backend, but a production approval should still include MySQL integration tests and an endpoint-by-endpoint authorization review. Audit writes currently log a server error if the database insert fails; they are not transactionally coupled to the business write.
+
+
+## Scope enforcement and dedicated tenant routing (current hardening pass)
+
+Resource-scoped authorization supports organization, site, and gate scopes. A gate-scoped permission applies only to that active gate; a site-scoped permission applies to active gates under that site; an organization-scoped permission applies to all active resources in the organization. All resource IDs are checked against the authenticated organization before access is granted. Site/gate-dependent list endpoints must use the `AccessibleSites` / `AccessibleGates` result and must return an empty list when a scoped grant has no active resources (never fall back to organization-wide access).
+
+Visitor directory, pass-type catalogue, user administration, role administration, organization settings, and notification queue management are intentionally organization-wide administrative resources in this API. Their `Require` checks accept organization-scope grants only; a site/gate-only role cannot use these endpoints. If a future product requirement allows site-scoped visitor or pass-type management, those tables need explicit ownership relationships or list filters based on gatepass relationships before the permissions are relaxed.
+
+The database router resolves every tenant-owned operation from the signed organization claim placed into request context by bearer middleware. Shared tenants route to the central schema; dedicated tenants route to an encrypted, validated DSN only while the central tenant lifecycle is ACTIVE and provisioning is READY. Dedicated provisioning applies the embedded versioned migrations, checks required tables/columns/uniqueness indexes, verifies that the target schema is not assigned to another tenant, copies the tenant identity/role grants, and activates only after validation succeeds. Configure `PLATFORM_DB_ENCRYPTION_KEY` as 32 random bytes (or base64-encoded 32 bytes). Do not log DSNs or passwords.
+
+Integration tests requiring dedicated database provisioning must use `GOPASS_TEST_DSN` for a central database ending in `_test` and `GOPASS_DEDICATED_TEST_DSN` for a separate dedicated database also ending in `_test`. The dedicated database test is skipped unless both the DSN and encryption key are configured. Never point these variables at production.

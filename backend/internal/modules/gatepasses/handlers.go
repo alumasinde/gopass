@@ -1,7 +1,6 @@
 package gatepasses
 
 import (
-	"database/sql"
 	"errors"
 	"net/http"
 	"time"
@@ -20,7 +19,7 @@ type Handler struct {
 	service *Service
 }
 
-func NewHandler(db *sql.DB, a *rbac.Service, au *audit.Service) *Handler {
+func NewHandler(db any, a *rbac.Service, au *audit.Service) *Handler {
 	return &Handler{a, au, NewService(db, a, au)}
 }
 func (h *Handler) registerRoutes(r chi.Router) {
@@ -34,6 +33,15 @@ func (h *Handler) registerRoutes(r chi.Router) {
 	})
 }
 func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
+	has, authErr := h.authz.HasPermissionAnyScope(r.Context(), "gatepasses.view")
+	if authErr != nil {
+		httpx.Fail(w, apperr.Database)
+		return
+	}
+	if !has {
+		httpx.Fail(w, apperr.Forbidden)
+		return
+	}
 	o, _ := tenancy.ID(r.Context())
 	v, e := h.service.List(r.Context(), o)
 	if e != nil {

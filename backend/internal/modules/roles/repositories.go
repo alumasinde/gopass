@@ -3,6 +3,7 @@ package roles
 import (
 	"context"
 	"database/sql"
+	"github.com/alumasinde/gopass/internal/app/database"
 )
 
 // Repository is the persistence boundary for roles.
@@ -26,9 +27,9 @@ type Repository interface {
 	GetUserRoles(ctx context.Context, orgID, userID int64) ([]UserRole, error)
 }
 
-type repository struct{ db *sql.DB }
+type repository struct{ db database.Handle }
 
-func NewRepository(db *sql.DB) Repository { return &repository{db} }
+func NewRepository(db any) Repository { return &repository{database.Adapt(db)} }
 
 func (r *repository) Ping(ctx context.Context) error {
 	return r.db.PingContext(ctx)

@@ -2,6 +2,7 @@ package notifications
 
 import (
 	"database/sql"
+	"github.com/alumasinde/gopass/internal/app/database"
 	"github.com/alumasinde/gopass/internal/platform/apperr"
 	"github.com/alumasinde/gopass/internal/platform/httpx"
 	"github.com/alumasinde/gopass/internal/platform/rbac"
@@ -12,11 +13,11 @@ import (
 )
 
 type Handler struct {
-	db    *sql.DB
+	db    database.Handle
 	authz *rbac.Service
 }
 
-func NewHandler(db *sql.DB, a *rbac.Service) *Handler { return &Handler{db: db, authz: a} }
+func NewHandler(db any, a *rbac.Service) *Handler { return &Handler{db: database.Adapt(db), authz: a} }
 func (h *Handler) RegisterRoutes(r chi.Router) {
 	r.Route("/notifications", func(r chi.Router) { r.Get("/", h.List); r.Post("/{id}/retry", h.Retry) })
 }

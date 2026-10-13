@@ -1,7 +1,7 @@
 package roles
 
 import (
-	"database/sql"
+	"github.com/alumasinde/gopass/internal/app/database"
 	"net/http"
 
 	"github.com/alumasinde/gopass/internal/platform/apperr"
@@ -13,15 +13,15 @@ import (
 )
 
 type Handler struct {
-	db      *sql.DB
+	db      database.Handle
 	authz   *rbac.Service
 	audit   *audit.Service
 	service *Service
 }
 
-func NewHandler(db *sql.DB, a *rbac.Service, au *audit.Service) *Handler {
+func NewHandler(db any, a *rbac.Service, au *audit.Service) *Handler {
 	repo := NewRepository(db)
-	return &Handler{db: db, authz: a, audit: au, service: NewService(repo)}
+	return &Handler{db: database.Adapt(db), authz: a, audit: au, service: NewService(repo)}
 }
 
 func (h *Handler) registerRoutes(r chi.Router) {

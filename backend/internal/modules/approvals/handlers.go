@@ -1,7 +1,6 @@
 package approvals
 
 import (
-	"database/sql"
 	"errors"
 	"net/http"
 
@@ -19,7 +18,7 @@ type Handler struct {
 	service *Service
 }
 
-func NewHandler(db *sql.DB, a *rbac.Service, au *audit.Service) *Handler {
+func NewHandler(db any, a *rbac.Service, au *audit.Service) *Handler {
 	return &Handler{a, au, NewService(db, a, au)}
 }
 func (h *Handler) registerRoutes(r chi.Router) {
@@ -31,7 +30,12 @@ func (h *Handler) registerRoutes(r chi.Router) {
 	})
 }
 func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
-	if h.authz.Require(r.Context(), "approvals.view") != nil {
+	has, authErr := h.authz.HasPermissionAnyScope(r.Context(), "approvals.view")
+	if authErr != nil {
+		httpx.Fail(w, apperr.Database)
+		return
+	}
+	if !has {
 		httpx.Fail(w, apperr.Forbidden)
 		return
 	}
@@ -44,7 +48,12 @@ func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
 	httpx.OK(w, v)
 }
 func (h *Handler) Get(w http.ResponseWriter, r *http.Request) {
-	if h.authz.Require(r.Context(), "approvals.view") != nil {
+	has, authErr := h.authz.HasPermissionAnyScope(r.Context(), "approvals.view")
+	if authErr != nil {
+		httpx.Fail(w, apperr.Database)
+		return
+	}
+	if !has {
 		httpx.Fail(w, apperr.Forbidden)
 		return
 	}
@@ -61,6 +70,10 @@ func (h *Handler) Get(w http.ResponseWriter, r *http.Request) {
 	}
 	if e != nil {
 		httpx.Fail(w, apperr.Database)
+		return
+	}
+	if e := h.authz.RequireWithScope(r.Context(), "approvals.view", rbac.ScopeGate, v.GateID); e != nil {
+		httpx.Fail(w, apperr.NotFound)
 		return
 	}
 	httpx.OK(w, v)

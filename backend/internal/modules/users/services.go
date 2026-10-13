@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/alumasinde/gopass/internal/platform/auth"
+	"github.com/alumasinde/gopass/internal/platform/tenancy"
 )
 
 var (
@@ -161,6 +162,7 @@ func (s *Service) RefreshToken(ctx context.Context, refreshToken string) (string
 	if err != nil || claims.Type != "refresh" {
 		return "", "", ErrInvalidRefreshToken
 	}
+	ctx = tenancy.With(ctx, claims.OrgID)
 
 	user, err := s.repo.GetByID(ctx, claims.OrgID, claims.UserID)
 	if err != nil {
@@ -204,6 +206,7 @@ func (s *Service) Logout(ctx context.Context, refreshToken string) error {
 	if err != nil || claims.Type != "refresh" || claims.SessionID == "" {
 		return ErrInvalidRefreshToken
 	}
+	ctx = tenancy.With(ctx, claims.OrgID)
 	return s.repo.RevokeSession(ctx, claims.SessionID, claims.UserID, claims.OrgID, hashToken(refreshToken))
 }
 

@@ -2,8 +2,8 @@ package users
 
 import (
 	"context"
-	"database/sql"
 	"errors"
+	"github.com/alumasinde/gopass/internal/app/database"
 	"net"
 	"net/http"
 	"strings"
@@ -19,7 +19,8 @@ import (
 )
 
 type Handler struct {
-	db          *sql.DB
+	db          database.Handle
+	central     database.Handle
 	authz       *rbac.Service
 	audit       *audit.Service
 	Service     *Service
@@ -31,14 +32,18 @@ func (h *Handler) IsActive(ctx context.Context, userID, orgID int64) (bool, erro
 	return h.Service.IsActive(ctx, userID, orgID)
 }
 
-func NewHandler(db *sql.DB, a *rbac.Service, au *audit.Service) *Handler {
+func NewHandler(db any, a *rbac.Service, au *audit.Service) *Handler {
 	repo := NewRepository(db)
-	return &Handler{db: db, authz: a, audit: au, Service: NewService(repo, nil), rateLimiter: ratelimit.NewRateLimiter()}
+	return &Handler{db: database.Adapt(db), authz: a, audit: au, Service: NewService(repo, nil), rateLimiter: ratelimit.NewRateLimiter()}
 }
 
-func NewAuthService(db *sql.DB, tokens *auth.Service, auditServices ...*audit.Service) *Handler {
+func NewAuthService(db any, tokens *auth.Service, auditServices ...*audit.Service) *Handler {
 	repo := NewRepository(db)
-	h := &Handler{db: db, Service: NewService(repo, tokens), Auth: tokens, rateLimiter: ratelimit.NewRateLimiter()}
+	central := database.Adapt(db)
+	if source, ok := db.(interface{ CentralHandle() database.Handle }); ok {
+		central = source.CentralHandle()
+	}
+	h := &Handler{db: database.Adapt(db), central: central, Service: NewService(repo, tokens), Auth: tokens, rateLimiter: ratelimit.NewRateLimiter()}
 	if len(auditServices) > 0 {
 		h.audit = auditServices[0]
 	}
@@ -85,7 +90,7 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 		// so resolve the tenant from the explicit organization ID or slug.
 		org = in.OrganizationID
 		if org < 1 && in.OrganizationSlug != "" {
-			if lookupErr := h.db.QueryRowContext(r.Context(), `SELECT id FROM organizations WHERE slug=? AND is_active=1`, in.OrganizationSlug).Scan(&org); lookupErr != nil {
+			if lookupErr := h.central.QueryRowContext(r.Context(), `SELECT id FROM organizations WHERE slug=? AND is_active=1 AND lifecycle_status='ACTIVE' AND provisioning_status='READY'`, in.OrganizationSlug).Scan(&org); lookupErr != nil {
 				org = 0
 			}
 		}
@@ -96,16 +101,17 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var organizationActive bool
-	if err := h.db.QueryRowContext(r.Context(), `SELECT is_active FROM organizations WHERE id=?`, org).Scan(&organizationActive); err != nil || !organizationActive {
+	if err := h.central.QueryRowContext(r.Context(), `SELECT is_active FROM organizations WHERE id=? AND lifecycle_status='ACTIVE' AND provisioning_status='READY'`, org).Scan(&organizationActive); err != nil || !organizationActive {
 		httpx.Fail(w, apperr.Unauthorized.With("invalid credentials"))
 		return
 	}
 
-	user, accessToken, refreshToken, e := h.Service.Authenticate(r.Context(), org, in.Email, in.Password)
+	tenantCtx := tenancy.With(r.Context(), org)
+	user, accessToken, refreshToken, e := h.Service.Authenticate(tenantCtx, org, in.Email, in.Password)
 	if e != nil {
 		h.rateLimiter.RecordLoginAttempt(ip, in.Email, false)
 		if h.audit != nil {
-			h.audit.Record(r.Context(), audit.Entry{OrganizationID: org, Action: "user.login_failed", ResourceType: "user", ResourceID: 0})
+			h.audit.Record(tenancy.With(r.Context(), org), audit.Entry{OrganizationID: org, Action: "user.login_failed", ResourceType: "user", ResourceID: 0})
 		}
 		if e == ErrUserNotFound || e == ErrInvalidPassword {
 			httpx.Fail(w, apperr.Unauthorized.With("invalid credentials"))
@@ -117,7 +123,7 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 
 	h.rateLimiter.RecordLoginAttempt(ip, in.Email, true)
 	if h.audit != nil {
-		h.audit.Record(r.Context(), audit.Entry{OrganizationID: org, ActorUserID: user.ID, Action: "user.login", ResourceType: "user", ResourceID: user.ID})
+		h.audit.Record(tenantCtx, audit.Entry{OrganizationID: org, ActorUserID: user.ID, Action: "user.login", ResourceType: "user", ResourceID: user.ID})
 	}
 	httpx.OK(w, map[string]any{
 		"user":          map[string]any{"id": user.ID, "first_name": user.FirstName, "last_name": user.LastName, "email": user.Email},
@@ -142,7 +148,7 @@ func (h *Handler) Refresh(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if claims, err := h.Auth.Parse(in.RefreshToken); err == nil && h.audit != nil {
-		h.audit.Record(r.Context(), audit.Entry{OrganizationID: claims.OrgID, ActorUserID: claims.UserID, Action: "user.session_refreshed", ResourceType: "session", ResourceID: claims.UserID})
+		h.audit.Record(tenancy.With(r.Context(), claims.OrgID), audit.Entry{OrganizationID: claims.OrgID, ActorUserID: claims.UserID, Action: "user.session_refreshed", ResourceType: "session", ResourceID: claims.UserID})
 	}
 	httpx.OK(w, map[string]any{"access_token": newAccessToken, "refresh_token": newRefreshToken})
 }
@@ -166,7 +172,7 @@ func (h *Handler) Logout(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if claims, err := h.Auth.Parse(in.RefreshToken); err == nil && h.audit != nil {
-		h.audit.Record(r.Context(), audit.Entry{OrganizationID: claims.OrgID, ActorUserID: claims.UserID, Action: "user.session_revoked", ResourceType: "session", ResourceID: claims.UserID})
+		h.audit.Record(tenancy.With(r.Context(), claims.OrgID), audit.Entry{OrganizationID: claims.OrgID, ActorUserID: claims.UserID, Action: "user.session_revoked", ResourceType: "session", ResourceID: claims.UserID})
 	}
 	httpx.OK(w, map[string]any{"message": "logged out successfully"})
 }

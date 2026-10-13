@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"github.com/alumasinde/gopass/internal/app/database"
 	"time"
 )
 
@@ -29,9 +30,9 @@ type Repository interface {
 	IsSessionActive(ctx context.Context, sessionID string, userID, orgID int64) (bool, error)
 }
 
-type repository struct{ db *sql.DB }
+type repository struct{ db database.Handle }
 
-func NewRepository(db *sql.DB) Repository { return &repository{db} }
+func NewRepository(db any) Repository { return &repository{database.Adapt(db)} }
 
 func (r *repository) Ping(ctx context.Context) error {
 	return r.db.PingContext(ctx)
@@ -250,18 +251,18 @@ func (r *repository) RevokeSession(ctx context.Context, sessionID string, userID
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
-	res, err := tx.ExecContext(ctx, `UPDATE refresh_tokens SET revoked_at=UTC_TIMESTAMP() WHERE session_id=? AND user_id=? AND organization_id=? AND token_hash=? AND revoked_at IS NULL AND expires_at>UTC_TIMESTAMP()`, sessionID, userID, orgID, tokenHash)
-	if err != nil {
-		return err
-	}
-	n, err := res.RowsAffected()
-	if err != nil {
-		return err
-	}
-	if n != 1 {
+	// Lock the presented token row even if a concurrent refresh has just marked
+	// it revoked. Logout therefore wins a refresh/logout race by revoking the
+	// complete session family after acquiring the token row lock.
+	var storedHash string
+	err = tx.QueryRowContext(ctx, `SELECT token_hash FROM refresh_tokens WHERE session_id=? AND user_id=? AND organization_id=? AND token_hash=? AND expires_at>UTC_TIMESTAMP() FOR UPDATE`, sessionID, userID, orgID, tokenHash).Scan(&storedHash)
+	if errors.Is(err, sql.ErrNoRows) {
 		return ErrInvalidRefreshToken
 	}
-	if _, err = tx.ExecContext(ctx, `UPDATE refresh_tokens SET revoked_at=UTC_TIMESTAMP() WHERE session_id=? AND user_id=? AND organization_id=? AND revoked_at IS NULL`, sessionID, userID, orgID); err != nil {
+	if err != nil {
+		return err
+	}
+	if _, err = tx.ExecContext(ctx, `UPDATE refresh_tokens SET revoked_at=COALESCE(revoked_at,UTC_TIMESTAMP()) WHERE session_id=? AND user_id=? AND organization_id=?`, sessionID, userID, orgID); err != nil {
 		return err
 	}
 	return tx.Commit()

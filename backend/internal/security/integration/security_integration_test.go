@@ -401,7 +401,7 @@ func TestSiteAndGateScopedRBAC(t *testing.T) {
 	pass3 := h.createGatepass(org.id, visitor, gate3, passType)
 
 	siteUser := h.createUser(org.id, "site-scoped@example.test")
-	siteRole := h.createRole(org.id, "site-scope", "gatepasses.view")
+	siteRole := h.createRole(org.id, "site-scope", "gatepasses.view", "sites.view", "gates.view", "sites.update", "gates.update")
 	h.assignRole(org.id, siteUser.id, siteRole, "SITE", &site1, nil)
 	siteTokens := h.login(siteUser, org.id)
 	if rec := h.request(http.MethodGet, fmt.Sprintf("/api/v1/gatepasses/%d", pass1), siteTokens.AccessToken, nil); rec.Code != http.StatusOK {
@@ -413,9 +413,22 @@ func TestSiteAndGateScopedRBAC(t *testing.T) {
 	if rec := h.request(http.MethodGet, fmt.Sprintf("/api/v1/gatepasses/%d", pass3), siteTokens.AccessToken, nil); rec.Code != http.StatusOK {
 		t.Fatalf("site-scoped user should access another gate at the assigned site: status=%d body=%s", rec.Code, rec.Body.String())
 	}
+	var siteListEnvelope struct {
+		Data []map[string]any `json:"data"`
+	}
+	siteList := h.request(http.MethodGet, "/api/v1/gatepasses/", siteTokens.AccessToken, nil)
+	if siteList.Code != http.StatusOK {
+		t.Fatalf("site-scoped gatepass list: status=%d body=%s", siteList.Code, siteList.Body.String())
+	}
+	if err := json.Unmarshal(siteList.Body.Bytes(), &siteListEnvelope); err != nil {
+		t.Fatal(err)
+	}
+	if len(siteListEnvelope.Data) != 2 {
+		t.Fatalf("site-scoped list should contain only the two assigned-site passes, got %d", len(siteListEnvelope.Data))
+	}
 
 	gateUser := h.createUser(org.id, "gate-scoped@example.test")
-	gateRole := h.createRole(org.id, "gate-scope", "gatepasses.view")
+	gateRole := h.createRole(org.id, "gate-scope", "gatepasses.view", "sites.view", "gates.view", "sites.update", "gates.update")
 	h.assignRole(org.id, gateUser.id, gateRole, "GATE", nil, &gate1)
 	gateTokens := h.login(gateUser, org.id)
 	if rec := h.request(http.MethodGet, fmt.Sprintf("/api/v1/gatepasses/%d", pass1), gateTokens.AccessToken, nil); rec.Code != http.StatusOK {
@@ -426,6 +439,19 @@ func TestSiteAndGateScopedRBAC(t *testing.T) {
 	}
 	if rec := h.request(http.MethodGet, fmt.Sprintf("/api/v1/gatepasses/%d", pass3), gateTokens.AccessToken, nil); rec.Code != http.StatusNotFound {
 		t.Fatalf("gate-scoped user must not read another gate at the same site: status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var gateListEnvelope struct {
+		Data []map[string]any `json:"data"`
+	}
+	gateList := h.request(http.MethodGet, "/api/v1/gatepasses/", gateTokens.AccessToken, nil)
+	if gateList.Code != http.StatusOK {
+		t.Fatalf("gate-scoped gatepass list: status=%d body=%s", gateList.Code, gateList.Body.String())
+	}
+	if err := json.Unmarshal(gateList.Body.Bytes(), &gateListEnvelope); err != nil {
+		t.Fatal(err)
+	}
+	if len(gateListEnvelope.Data) != 1 {
+		t.Fatalf("gate-scoped list should contain only the assigned gate's pass, got %d", len(gateListEnvelope.Data))
 	}
 	// Ensure the gates are distinct resources even within the same org.
 	if gate1 == gate2 || gate1 == gate3 || gate2 == gate3 {
@@ -496,6 +522,91 @@ func TestRefreshTokenReplayRejectedAndReplacementWorks(t *testing.T) {
 		t.Fatalf("replacement refresh token should remain valid after old-token replay: %d %s", next.Code, next.Body.String())
 	}
 	assertAuditEvent(t, h.db, org.id, user.id, "user.session_refreshed")
+}
+
+func TestInactiveUserCannotUseExistingAccessToken(t *testing.T) {
+	h := newHarness(t)
+	org := h.createOrg("inactive-user")
+	user := h.createUser(org.id, fmt.Sprintf("inactive-%d@example.test", time.Now().UnixNano()))
+	tokens := h.login(user, org.id)
+	if _, err := h.db.Exec(`UPDATE users SET is_active=0,updated_at=UTC_TIMESTAMP() WHERE id=? AND organization_id=?`, user.id, org.id); err != nil {
+		t.Fatal(err)
+	}
+	got := h.request(http.MethodGet, "/api/v1/auth/me", tokens.AccessToken, nil)
+	if got.Code != http.StatusUnauthorized {
+		t.Fatalf("inactive user token must be rejected: status=%d body=%s", got.Code, got.Body.String())
+	}
+}
+
+func TestDisabledOrganizationRejectsExistingAccessToken(t *testing.T) {
+	h := newHarness(t)
+	org := h.createOrg("disabled-org")
+	user := h.createUser(org.id, fmt.Sprintf("disabled-org-%d@example.test", time.Now().UnixNano()))
+	tokens := h.login(user, org.id)
+	if _, err := h.db.Exec(`UPDATE organizations SET is_active=0,lifecycle_status='SUSPENDED',updated_at=UTC_TIMESTAMP() WHERE id=?`, org.id); err != nil {
+		t.Fatal(err)
+	}
+	got := h.request(http.MethodGet, "/api/v1/auth/me", tokens.AccessToken, nil)
+	if got.Code != http.StatusUnauthorized {
+		t.Fatalf("disabled organization token must be rejected: status=%d body=%s", got.Code, got.Body.String())
+	}
+}
+
+func TestConcurrentRefreshAndLogoutAlwaysRevokeSession(t *testing.T) {
+	h := newHarness(t)
+	org := h.createOrg("refresh-logout-race")
+	user := h.createUser(org.id, fmt.Sprintf("refresh-logout-%d@example.test", time.Now().UnixNano()))
+	original := h.login(user, org.id)
+	claims, err := h.tokens.Parse(original.RefreshToken)
+	if err != nil {
+		t.Fatal(err)
+	}
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	var refreshRec, logoutRec *httptest.ResponseRecorder
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		<-start
+		refreshRec = h.request(http.MethodPost, "/api/v1/auth/refresh", "", map[string]any{"refresh_token": original.RefreshToken})
+	}()
+	go func() {
+		defer wg.Done()
+		<-start
+		logoutRec = h.request(http.MethodPost, "/api/v1/auth/logout", "", map[string]any{"refresh_token": original.RefreshToken})
+	}()
+	close(start)
+	wg.Wait()
+	if refreshRec.Code != http.StatusOK && refreshRec.Code != http.StatusUnauthorized {
+		t.Fatalf("unexpected concurrent refresh status=%d body=%s", refreshRec.Code, refreshRec.Body.String())
+	}
+	if logoutRec.Code != http.StatusOK {
+		t.Fatalf("logout must revoke the session even when refresh races: status=%d body=%s", logoutRec.Code, logoutRec.Body.String())
+	}
+	if got := h.request(http.MethodGet, "/api/v1/auth/me", original.AccessToken, nil); got.Code != http.StatusUnauthorized {
+		t.Fatalf("original access token remained valid after logout race: status=%d body=%s", got.Code, got.Body.String())
+	}
+	if refreshRec.Code == http.StatusOK {
+		var envelope struct {
+			Data tokenPair `json:"data"`
+		}
+		if err := json.Unmarshal(refreshRec.Body.Bytes(), &envelope); err != nil {
+			t.Fatal(err)
+		}
+		if envelope.Data.AccessToken == "" {
+			t.Fatalf("refresh succeeded without a replacement access token: %s", refreshRec.Body.String())
+		}
+		if got := h.request(http.MethodGet, "/api/v1/auth/me", envelope.Data.AccessToken, nil); got.Code != http.StatusUnauthorized {
+			t.Fatalf("replacement access token remained valid after concurrent logout: status=%d body=%s", got.Code, got.Body.String())
+		}
+	}
+	var active int
+	if err := h.db.QueryRow(`SELECT COUNT(*) FROM refresh_tokens WHERE session_id=? AND user_id=? AND organization_id=? AND revoked_at IS NULL AND expires_at>UTC_TIMESTAMP()`, claims.SessionID, user.id, org.id).Scan(&active); err != nil {
+		t.Fatal(err)
+	}
+	if active != 0 {
+		t.Fatalf("concurrent logout left %d active refresh tokens for the session", active)
+	}
 }
 
 func TestRolePermissionChangesPersistAuditRecords(t *testing.T) {

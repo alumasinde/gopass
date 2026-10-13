@@ -9,6 +9,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -18,6 +19,7 @@ import (
 	"strings"
 	"time"
 
+	appdatabase "github.com/alumasinde/gopass/internal/app/database"
 	"github.com/alumasinde/gopass/internal/app/http/middleware"
 	"github.com/alumasinde/gopass/internal/platform/apperr"
 	"github.com/alumasinde/gopass/internal/platform/auth"
@@ -32,10 +34,21 @@ type Handler struct {
 	tokens        *auth.Service
 	encryptionKey []byte
 	rateLimiter   *ratelimit.RateLimiter
+	tenantPools   interface {
+		Invalidate(int64)
+		RevokeSessions(context.Context, int64) error
+	}
 }
 
-func New(db *sql.DB, tokens *auth.Service) *Handler {
-	return &Handler{db: db, tokens: tokens, encryptionKey: encryptionKeyFromEnv(os.Getenv("PLATFORM_DB_ENCRYPTION_KEY")), rateLimiter: ratelimit.NewRateLimiter()}
+func New(db *sql.DB, tokens *auth.Service, pools ...interface {
+	Invalidate(int64)
+	RevokeSessions(context.Context, int64) error
+}) *Handler {
+	h := &Handler{db: db, tokens: tokens, encryptionKey: encryptionKeyFromEnv(os.Getenv("PLATFORM_DB_ENCRYPTION_KEY")), rateLimiter: ratelimit.NewRateLimiter()}
+	if len(pools) > 0 {
+		h.tenantPools = pools[0]
+	}
+	return h
 }
 func encryptionKeyFromEnv(value string) []byte {
 	value = strings.TrimSpace(value)
@@ -376,10 +389,6 @@ func (h *Handler) CreateOrganization(w http.ResponseWriter, r *http.Request) {
 		httpx.Fail(w, apperr.InvalidRequest.With("database_mode must be SHARED or DEDICATED"))
 		return
 	}
-	if mode == "DEDICATED" {
-		httpx.Fail(w, apperr.InvalidRequest.With("create the tenant as SHARED first, then configure a dedicated database; dedicated data-plane routing is not enabled yet"))
-		return
-	}
 	claims, _ := auth.From(r.Context())
 	tx, err := h.db.BeginTx(r.Context(), nil)
 	if err != nil {
@@ -387,7 +396,7 @@ func (h *Handler) CreateOrganization(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer tx.Rollback()
-	res, err := tx.ExecContext(r.Context(), `INSERT INTO organizations(name,slug,is_active,lifecycle_status,database_mode,provisioning_status,created_at,updated_at) VALUES(?,?,0,'PROVISIONING','SHARED','PENDING',UTC_TIMESTAMP(),UTC_TIMESTAMP())`, in.Name, in.Slug)
+	res, err := tx.ExecContext(r.Context(), `INSERT INTO organizations(name,slug,is_active,lifecycle_status,database_mode,provisioning_status,created_at,updated_at) VALUES(?,?,0,'PROVISIONING',?,'PENDING',UTC_TIMESTAMP(),UTC_TIMESTAMP())`, in.Name, in.Slug, mode)
 	if err != nil {
 		httpx.Fail(w, apperr.Conflict.With("organization slug already exists or organization could not be created"))
 		return
@@ -425,7 +434,7 @@ func (h *Handler) CreateOrganization(w http.ResponseWriter, r *http.Request) {
 		httpx.Fail(w, apperr.Database)
 		return
 	}
-	if err = h.auditTx(r.Context(), tx, claims.UserID, "organization.provisioning_requested", "organization", id, nil, map[string]any{"name": in.Name, "slug": in.Slug, "database_mode": "SHARED", "provisioning_status": "PENDING", "admin_email": in.AdminEmail}); err != nil {
+	if err = h.auditTx(r.Context(), tx, claims.UserID, "organization.provisioning_requested", "organization", id, nil, map[string]any{"name": in.Name, "slug": in.Slug, "database_mode": mode, "provisioning_status": "PENDING", "admin_email": in.AdminEmail}); err != nil {
 		httpx.Fail(w, apperr.Database)
 		return
 	}
@@ -433,7 +442,7 @@ func (h *Handler) CreateOrganization(w http.ResponseWriter, r *http.Request) {
 		httpx.Fail(w, apperr.Database)
 		return
 	}
-	httpx.Created(w, map[string]any{"id": id, "name": in.Name, "slug": in.Slug, "admin_user_id": userID, "lifecycle_status": "PROVISIONING", "provisioning_status": "PENDING"})
+	httpx.Created(w, map[string]any{"id": id, "name": in.Name, "slug": in.Slug, "admin_user_id": userID, "database_mode": mode, "lifecycle_status": "PROVISIONING", "provisioning_status": "PENDING"})
 }
 func (h *Handler) Suspend(w http.ResponseWriter, r *http.Request) {
 	h.changeLifecycle(w, r, "SUSPENDED")
@@ -465,7 +474,7 @@ func (h *Handler) changeLifecycle(w http.ResponseWriter, r *http.Request, to str
 		httpx.Fail(w, apperr.Database)
 		return
 	}
-	if to == "ACTIVE" && (prov != "READY" || mode != "SHARED") {
+	if to == "ACTIVE" && prov != "READY" {
 		httpx.Fail(w, apperr.Conflict.With("organization is not provisioned for activation"))
 		return
 	}
@@ -476,6 +485,14 @@ func (h *Handler) changeLifecycle(w http.ResponseWriter, r *http.Request, to str
 	if oldLife == "DEPROVISIONED" && to != "DEPROVISIONED" {
 		httpx.Fail(w, apperr.Conflict.With("deprovisioned organizations cannot be reactivated"))
 		return
+	}
+	// A resume is blocked until every previous session has been revoked in the
+	// tenant's actual database. If the dedicated DB is unavailable, stay suspended.
+	if to == "ACTIVE" && h.tenantPools != nil {
+		if err := h.tenantPools.RevokeSessions(r.Context(), id); err != nil {
+			httpx.Fail(w, apperr.Database)
+			return
+		}
 	}
 	newActive := to == "ACTIVE"
 	var suspended any
@@ -500,6 +517,14 @@ func (h *Handler) changeLifecycle(w http.ResponseWriter, r *http.Request, to str
 		httpx.Fail(w, apperr.Database)
 		return
 	}
+	if (to == "SUSPENDED" || to == "DEPROVISIONED") && h.tenantPools != nil {
+		revokeErr := h.tenantPools.RevokeSessions(r.Context(), id)
+		h.tenantPools.Invalidate(id)
+		if revokeErr != nil {
+			httpx.Fail(w, apperr.Database)
+			return
+		}
+	}
 	httpx.OK(w, map[string]any{"id": id, "is_active": newActive, "lifecycle_status": to})
 }
 
@@ -516,7 +541,8 @@ func (h *Handler) RetryProvisioning(w http.ResponseWriter, r *http.Request) {
 	}
 	defer tx.Rollback()
 	var mode, status string
-	err = tx.QueryRowContext(r.Context(), `SELECT database_mode,provisioning_status FROM organizations WHERE id=? FOR UPDATE`, id).Scan(&mode, &status)
+	var hasConfig bool
+	err = tx.QueryRowContext(r.Context(), `SELECT database_mode,provisioning_status,database_config_ciphertext IS NOT NULL AND database_config_ciphertext<>'' FROM organizations WHERE id=? FOR UPDATE`, id).Scan(&mode, &status, &hasConfig)
 	if errors.Is(err, sql.ErrNoRows) {
 		httpx.Fail(w, apperr.NotFound)
 		return
@@ -525,8 +551,8 @@ func (h *Handler) RetryProvisioning(w http.ResponseWriter, r *http.Request) {
 		httpx.Fail(w, apperr.Database)
 		return
 	}
-	if mode != "SHARED" || !(status == "FAILED" || status == "BLOCKED") {
-		httpx.Fail(w, apperr.Conflict.With("only failed shared-database provisioning can be retried"))
+	if !(mode == "SHARED" || (mode == "DEDICATED" && hasConfig)) || !(status == "FAILED" || status == "BLOCKED") {
+		httpx.Fail(w, apperr.Conflict.With("tenant provisioning cannot be retried until its database configuration is valid"))
 		return
 	}
 	if _, err = tx.ExecContext(r.Context(), `UPDATE organizations SET is_active=0,lifecycle_status='PROVISIONING',provisioning_status='PENDING',provisioning_error=NULL,updated_at=UTC_TIMESTAMP() WHERE id=?`, id); err != nil {
@@ -561,6 +587,10 @@ func (h *Handler) SetDatabaseConfig(w http.ResponseWriter, r *http.Request) {
 		httpx.Fail(w, apperr.InvalidRequest.With("dsn must be a valid MySQL DSN with a database name"))
 		return
 	}
+	if err := h.validateDedicatedTarget(r.Context(), id, strings.TrimSpace(in.DSN)); err != nil {
+		httpx.Fail(w, apperr.InvalidRequest.With("cannot use the supplied tenant database: credentials, connectivity, schema or isolation validation failed"))
+		return
+	}
 	ciphertext, err := h.encrypt(strings.TrimSpace(in.DSN))
 	if err != nil {
 		httpx.Fail(w, apperr.InvalidRequest.With("PLATFORM_DB_ENCRYPTION_KEY must be configured as exactly 32 bytes"))
@@ -581,14 +611,34 @@ func (h *Handler) SetDatabaseConfig(w http.ResponseWriter, r *http.Request) {
 		httpx.Fail(w, apperr.Database)
 		return
 	}
-	// The DSN is encrypted at rest. This build intentionally does not mark a dedicated
-	// tenant READY because API data-plane routing and per-tenant migrations are not yet implemented.
-	_, err = tx.ExecContext(r.Context(), `UPDATE organizations SET database_mode='DEDICATED',database_config_ciphertext=?,provisioning_status='BLOCKED',provisioning_error='Dedicated database routing and tenant migration runner are not enabled in this build',is_active=0,lifecycle_status='PROVISIONING',updated_at=UTC_TIMESTAMP() WHERE id=?`, ciphertext, id)
+	if oldMode == "SHARED" {
+		// This implementation copies identity and role grants, not historical
+		// operational records. Refuse a shared-to-dedicated cutover if it would
+		// strand existing business data in the central schema.
+		hasData, checkErr := h.hasTenantOperationalData(r.Context(), id)
+		if checkErr != nil {
+			httpx.Fail(w, apperr.Database)
+			return
+		}
+		if hasData {
+			httpx.Fail(w, apperr.Conflict.With("tenant has operational records in the shared database; export/migrate those records before switching database mode"))
+			return
+		}
+	}
+	if h.tenantPools != nil {
+		if err := h.tenantPools.RevokeSessions(r.Context(), id); err != nil {
+			httpx.Fail(w, apperr.Database)
+			return
+		}
+	}
+	// Credentials are encrypted at rest. The dedicated provisioner migrates and
+	// validates the target schema before the tenant can become READY/ACTIVE.
+	_, err = tx.ExecContext(r.Context(), `UPDATE organizations SET database_mode='DEDICATED',database_config_ciphertext=?,provisioning_status='PENDING',provisioning_error=NULL,is_active=0,lifecycle_status='PROVISIONING',updated_at=UTC_TIMESTAMP() WHERE id=?`, ciphertext, id)
 	if err != nil {
 		httpx.Fail(w, apperr.Database)
 		return
 	}
-	if err = h.auditTx(r.Context(), tx, claims.UserID, "organization.database_configured", "organization", id, map[string]any{"database_mode": oldMode, "provisioning_status": oldProv}, map[string]any{"database_mode": "DEDICATED", "provisioning_status": "BLOCKED"}); err != nil {
+	if err = h.auditTx(r.Context(), tx, claims.UserID, "organization.database_configured", "organization", id, map[string]any{"database_mode": oldMode, "provisioning_status": oldProv}, map[string]any{"database_mode": "DEDICATED", "provisioning_status": "PENDING"}); err != nil {
 		httpx.Fail(w, apperr.Database)
 		return
 	}
@@ -596,8 +646,77 @@ func (h *Handler) SetDatabaseConfig(w http.ResponseWriter, r *http.Request) {
 		httpx.Fail(w, apperr.Database)
 		return
 	}
-	httpx.OK(w, map[string]any{"id": id, "database_mode": "DEDICATED", "provisioning_status": "BLOCKED", "message": "Database credentials encrypted and saved. Tenant remains inactive until dedicated database routing and migrations are implemented."})
+	if h.tenantPools != nil {
+		h.tenantPools.Invalidate(id)
+	}
+	httpx.OK(w, map[string]any{"id": id, "database_mode": "DEDICATED", "provisioning_status": "PENDING", "message": "Database credentials validated and encrypted. Tenant will activate only after migrations and schema validation succeed."})
 }
+
+// hasTenantOperationalData prevents an unsafe shared-to-dedicated switch.
+// Current provisioning migrates identity and role grants, but deliberately does
+// not pretend to move historical gatepass, visitor, audit, or notification data.
+func (h *Handler) hasTenantOperationalData(ctx context.Context, orgID int64) (bool, error) {
+	tables := []string{
+		"sites", "gates", "visitors", "pass_types", "gatepasses",
+		"approval_requests", "approval_workflows", "credentials", "check_ins",
+		"check_outs", "audit_logs", "notifications", "organization_settings",
+	}
+	for _, table := range tables {
+		// Table names are a compile-time allow-list; only the organization ID is
+		// parameterized. Every table in this list has organization_id.
+		query := "SELECT COUNT(*) FROM " + table + " WHERE organization_id=?"
+		var count int64
+		if err := h.db.QueryRowContext(ctx, query, orgID).Scan(&count); err != nil {
+			return false, err
+		}
+		if count > 0 {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func (h *Handler) validateDedicatedTarget(ctx context.Context, orgID int64, dsn string) error {
+	if err := appdatabase.ValidateDSN(ctx, dsn); err != nil {
+		return err
+	}
+	target, err := mysql.ParseDSN(dsn)
+	if err != nil {
+		return err
+	}
+	var centralName string
+	if err := h.db.QueryRowContext(ctx, `SELECT DATABASE()`).Scan(&centralName); err != nil {
+		return err
+	}
+	if strings.EqualFold(target.DBName, centralName) {
+		return errors.New("dedicated database cannot be the central platform database")
+	}
+	rows, err := h.db.QueryContext(ctx, `SELECT id,database_config_ciphertext FROM organizations WHERE id<>? AND database_mode='DEDICATED' AND database_config_ciphertext IS NOT NULL AND database_config_ciphertext<>''`, orgID)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var otherID int64
+		var encrypted string
+		if err := rows.Scan(&otherID, &encrypted); err != nil {
+			return err
+		}
+		plain, err := h.decrypt(encrypted)
+		if err != nil {
+			return fmt.Errorf("cannot validate existing tenant database config for organization %d", otherID)
+		}
+		other, err := mysql.ParseDSN(plain)
+		if err != nil {
+			return fmt.Errorf("invalid stored database config for organization %d", otherID)
+		}
+		if strings.EqualFold(target.DBName, other.DBName) && strings.EqualFold(target.Addr, other.Addr) && strings.EqualFold(target.Net, other.Net) {
+			return fmt.Errorf("dedicated database is already assigned to organization %d", otherID)
+		}
+	}
+	return rows.Err()
+}
+
 func (h *Handler) encrypt(plain string) (string, error) {
 	if len(h.encryptionKey) != 32 {
 		return "", errors.New("encryption key must be 32 bytes")

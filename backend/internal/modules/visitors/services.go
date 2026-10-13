@@ -4,12 +4,13 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"github.com/alumasinde/gopass/internal/app/database"
 	"strings"
 )
 
-type Service struct{ db *sql.DB }
+type Service struct{ db database.Handle }
 
-func NewService(db *sql.DB) *Service { return &Service{db} }
+func NewService(db any) *Service { return &Service{database.Adapt(db)} }
 func (s *Service) List(c context.Context, o int64) ([]Visitor, error) {
 	rows, e := s.db.QueryContext(c, `SELECT id,organization_id,first_name,last_name,COALESCE(phone,''),COALESCE(email,''),is_blacklisted FROM visitors WHERE organization_id=? ORDER BY id DESC LIMIT 200`, o)
 	if e != nil {

@@ -1,7 +1,6 @@
 package passtypes
 
 import (
-	"database/sql"
 	"errors"
 	"net/http"
 	"strings"
@@ -20,7 +19,7 @@ type Handler struct {
 	service *Service
 }
 
-func NewHandler(db *sql.DB, a *rbac.Service, au *audit.Service) *Handler {
+func NewHandler(db any, a *rbac.Service, au *audit.Service) *Handler {
 	return &Handler{authz: a, audit: au, service: NewService(db)}
 }
 

@@ -1,7 +1,6 @@
 package sites
 
 import (
-	"database/sql"
 	"errors"
 	"net/http"
 
@@ -19,7 +18,7 @@ type Handler struct {
 	service *Service
 }
 
-func NewHandler(db *sql.DB, a *rbac.Service, au *audit.Service) *Handler {
+func NewHandler(db any, a *rbac.Service, au *audit.Service) *Handler {
 	return &Handler{authz: a, audit: au, service: NewService(db)}
 }
 func (h *Handler) registerRoutes(r chi.Router) {
@@ -32,30 +31,45 @@ func (h *Handler) registerRoutes(r chi.Router) {
 	})
 }
 func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
-	if e := h.authz.Require(r.Context(), "sites.view"); e != nil {
+	has, err := h.authz.HasPermissionAnyScope(r.Context(), "sites.view")
+	if err != nil {
+		httpx.Fail(w, apperr.Database)
+		return
+	}
+	if !has {
 		httpx.Fail(w, apperr.Forbidden)
 		return
 	}
-	org, e := tenancy.ID(r.Context())
-	if e != nil {
+	org, err := tenancy.ID(r.Context())
+	if err != nil {
 		httpx.Fail(w, apperr.TenantMissing)
 		return
 	}
-	v, e := h.service.List(r.Context(), org, 100)
-	if e != nil {
+	all, ids, err := h.authz.AccessibleSites(r.Context(), "sites.view")
+	if err != nil {
+		httpx.Fail(w, apperr.Database)
+		return
+	}
+	var v []Site
+	if all {
+		v, err = h.service.List(r.Context(), org, 200)
+	} else {
+		v, err = h.service.ListScoped(r.Context(), org, ids)
+	}
+	if err != nil {
 		httpx.Fail(w, apperr.Database)
 		return
 	}
 	httpx.OK(w, v)
 }
 func (h *Handler) Get(w http.ResponseWriter, r *http.Request) {
-	if e := h.authz.Require(r.Context(), "sites.view"); e != nil {
-		httpx.Fail(w, apperr.Forbidden)
-		return
-	}
 	id, e := httpx.ID(chi.URLParam(r, "id"))
 	if e != nil {
 		httpx.Fail(w, apperr.InvalidID)
+		return
+	}
+	if e := h.authz.RequireWithScope(r.Context(), "sites.view", rbac.ScopeSite, id); e != nil {
+		httpx.Fail(w, apperr.NotFound)
 		return
 	}
 	org, _ := tenancy.ID(r.Context())
@@ -97,15 +111,16 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 	httpx.Created(w, v)
 }
 func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
-	if e := h.authz.Require(r.Context(), "sites.update"); e != nil {
-		httpx.Fail(w, apperr.Forbidden)
-		return
-	}
 	id, e := httpx.ID(chi.URLParam(r, "id"))
 	if e != nil {
 		httpx.Fail(w, apperr.InvalidID)
 		return
 	}
+	if e := h.authz.RequireWithScope(r.Context(), "sites.update", rbac.ScopeSite, id); e != nil {
+		httpx.Fail(w, apperr.NotFound)
+		return
+	}
+
 	var in struct {
 		Name     string `json:"name"`
 		Code     string `json:"code"`
@@ -133,15 +148,16 @@ func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
 	httpx.OK(w, map[string]any{"id": id})
 }
 func (h *Handler) Delete(w http.ResponseWriter, r *http.Request) {
-	if e := h.authz.Require(r.Context(), "sites.delete"); e != nil {
-		httpx.Fail(w, apperr.Forbidden)
-		return
-	}
 	id, e := httpx.ID(chi.URLParam(r, "id"))
 	if e != nil {
 		httpx.Fail(w, apperr.InvalidID)
 		return
 	}
+	if e := h.authz.RequireWithScope(r.Context(), "sites.delete", rbac.ScopeSite, id); e != nil {
+		httpx.Fail(w, apperr.NotFound)
+		return
+	}
+
 	org, _ := tenancy.ID(r.Context())
 	e = h.service.Delete(r.Context(), org, id)
 	if errors.Is(e, ErrNotFound) {

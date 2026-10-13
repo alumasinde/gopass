@@ -6,6 +6,8 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"errors"
+	"github.com/alumasinde/gopass/internal/app/database"
+	"strings"
 	"time"
 
 	"github.com/alumasinde/gopass/internal/modules/notifications"
@@ -15,17 +17,17 @@ import (
 )
 
 type Service struct {
-	db    *sql.DB
+	db    database.Handle
 	authz *rbac.Service
 	audit *audit.Service
 }
 
-func NewService(db *sql.DB, a *rbac.Service, audits ...*audit.Service) *Service {
+func NewService(db any, a *rbac.Service, audits ...*audit.Service) *Service {
 	var au *audit.Service
 	if len(audits) > 0 {
 		au = audits[0]
 	}
-	return &Service{db: db, authz: a, audit: au}
+	return &Service{db: database.Adapt(db), authz: a, audit: au}
 }
 
 func hashToken(token string) string {
@@ -33,22 +35,39 @@ func hashToken(token string) string {
 	return hex.EncodeToString(h[:])
 }
 func (s *Service) List(c context.Context, o int64) ([]CheckIn, error) {
-	rows, e := s.db.QueryContext(c, `SELECT id,organization_id,gatepass_id,gate_id,checked_in_by,checked_in_at FROM check_ins WHERE organization_id=? ORDER BY id DESC LIMIT 200`, o)
-	if e != nil {
-		return nil, e
+	all, gateIDs, err := s.authz.AccessibleGates(c, "checkins.view")
+	if err != nil {
+		return nil, err
+	}
+	if !all && len(gateIDs) == 0 {
+		return []CheckIn{}, nil
+	}
+	query := `SELECT id,organization_id,gatepass_id,gate_id,checked_in_by,checked_in_at FROM check_ins WHERE organization_id=?`
+	args := []any{o}
+	if !all {
+		ph := strings.TrimSuffix(strings.Repeat("?,", len(gateIDs)), ",")
+		query += ` AND gate_id IN (` + ph + `)`
+		for _, id := range gateIDs {
+			args = append(args, id)
+		}
+	}
+	query += ` ORDER BY id DESC LIMIT 200`
+	rows, err := s.db.QueryContext(c, query, args...)
+	if err != nil {
+		return nil, err
 	}
 	defer rows.Close()
-	var x []CheckIn
+	var out []CheckIn
 	for rows.Next() {
 		var v CheckIn
 		var t time.Time
-		if e := rows.Scan(&v.ID, &v.OrganizationID, &v.GatepassID, &v.GateID, &v.CheckedInBy, &t); e != nil {
-			return nil, e
+		if err := rows.Scan(&v.ID, &v.OrganizationID, &v.GatepassID, &v.GateID, &v.CheckedInBy, &t); err != nil {
+			return nil, err
 		}
 		v.CheckedInAt = t.UTC().Format(time.RFC3339)
-		x = append(x, v)
+		out = append(out, v)
 	}
-	return x, rows.Err()
+	return out, rows.Err()
 }
 func (s *Service) Create(c context.Context, o int64, token string, gate int64) (*CheckIn, error) {
 	cl, ok := auth.From(c)

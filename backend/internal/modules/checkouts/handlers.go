@@ -1,7 +1,6 @@
 package checkouts
 
 import (
-	"database/sql"
 	"errors"
 	"github.com/alumasinde/gopass/internal/platform/apperr"
 	"github.com/alumasinde/gopass/internal/platform/audit"
@@ -18,14 +17,19 @@ type Handler struct {
 	service *Service
 }
 
-func NewHandler(db *sql.DB, a *rbac.Service, au *audit.Service) *Handler {
+func NewHandler(db any, a *rbac.Service, au *audit.Service) *Handler {
 	return &Handler{a, au, NewService(db, a, au)}
 }
 func (h *Handler) registerRoutes(r chi.Router) {
 	r.Route("/check-outs", func(r chi.Router) { r.Get("/", h.List); r.Post("/", h.Create); r.Get("/{id}", h.Get) })
 }
 func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
-	if h.authz.Require(r.Context(), "checkouts.view") != nil {
+	has, authErr := h.authz.HasPermissionAnyScope(r.Context(), "checkouts.view")
+	if authErr != nil {
+		httpx.Fail(w, apperr.Database)
+		return
+	}
+	if !has {
 		httpx.Fail(w, apperr.Forbidden)
 		return
 	}
@@ -38,7 +42,12 @@ func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
 	httpx.OK(w, v)
 }
 func (h *Handler) Get(w http.ResponseWriter, r *http.Request) {
-	if h.authz.Require(r.Context(), "checkouts.view") != nil {
+	has, authErr := h.authz.HasPermissionAnyScope(r.Context(), "checkouts.view")
+	if authErr != nil {
+		httpx.Fail(w, apperr.Database)
+		return
+	}
+	if !has {
 		httpx.Fail(w, apperr.Forbidden)
 		return
 	}

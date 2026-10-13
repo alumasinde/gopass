@@ -4,43 +4,62 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"github.com/alumasinde/gopass/internal/app/database"
 	"github.com/alumasinde/gopass/internal/modules/notifications"
 	"github.com/alumasinde/gopass/internal/platform/audit"
 	"github.com/alumasinde/gopass/internal/platform/auth"
 	"github.com/alumasinde/gopass/internal/platform/rbac"
+	"strings"
 	"time"
 )
 
 type Service struct {
-	db    *sql.DB
+	db    database.Handle
 	authz *rbac.Service
 	audit *audit.Service
 }
 
-func NewService(db *sql.DB, a *rbac.Service, audits ...*audit.Service) *Service {
+func NewService(db any, a *rbac.Service, audits ...*audit.Service) *Service {
 	var au *audit.Service
 	if len(audits) > 0 {
 		au = audits[0]
 	}
-	return &Service{db: db, authz: a, audit: au}
+	return &Service{db: database.Adapt(db), authz: a, audit: au}
 }
 func (s *Service) List(c context.Context, o int64) ([]CheckOut, error) {
-	rows, e := s.db.QueryContext(c, `SELECT id,organization_id,gatepass_id,gate_id,checked_out_by,checked_out_at FROM check_outs WHERE organization_id=? ORDER BY id DESC LIMIT 200`, o)
-	if e != nil {
-		return nil, e
+	all, gateIDs, err := s.authz.AccessibleGates(c, "checkouts.view")
+	if err != nil {
+		return nil, err
+	}
+	if !all && len(gateIDs) == 0 {
+		return []CheckOut{}, nil
+	}
+	query := `SELECT id,organization_id,gatepass_id,gate_id,checked_out_by,checked_out_at FROM check_outs WHERE organization_id=?`
+	args := []any{o}
+	if !all {
+		ph := strings.TrimSuffix(strings.Repeat("?,", len(gateIDs)), ",")
+		query += ` AND gate_id IN (` + ph + `)`
+		for _, id := range gateIDs {
+			args = append(args, id)
+		}
+	}
+	query += ` ORDER BY id DESC LIMIT 200`
+	rows, err := s.db.QueryContext(c, query, args...)
+	if err != nil {
+		return nil, err
 	}
 	defer rows.Close()
-	var x []CheckOut
+	var out []CheckOut
 	for rows.Next() {
 		var v CheckOut
 		var t time.Time
-		if e := rows.Scan(&v.ID, &v.OrganizationID, &v.GatepassID, &v.GateID, &v.CheckedOutBy, &t); e != nil {
-			return nil, e
+		if err := rows.Scan(&v.ID, &v.OrganizationID, &v.GatepassID, &v.GateID, &v.CheckedOutBy, &t); err != nil {
+			return nil, err
 		}
 		v.CheckedOutAt = t.UTC().Format(time.RFC3339)
-		x = append(x, v)
+		out = append(out, v)
 	}
-	return x, rows.Err()
+	return out, rows.Err()
 }
 func (s *Service) Create(c context.Context, o int64, gp, gate int64) (*CheckOut, error) {
 	cl, ok := auth.From(c)

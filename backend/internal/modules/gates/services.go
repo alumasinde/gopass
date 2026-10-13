@@ -4,12 +4,13 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"github.com/alumasinde/gopass/internal/app/database"
 	"strings"
 )
 
-type Service struct{ db *sql.DB }
+type Service struct{ db database.Handle }
 
-func NewService(db *sql.DB) *Service { return &Service{db} }
+func NewService(db any) *Service { return &Service{database.Adapt(db)} }
 func (s *Service) List(c context.Context, o int64) ([]Gate, error) {
 	rows, e := s.db.QueryContext(c, `SELECT id,organization_id,site_id,name,code,is_active FROM gates WHERE organization_id=? ORDER BY id DESC LIMIT 200`, o)
 	if e != nil {
@@ -25,6 +26,30 @@ func (s *Service) List(c context.Context, o int64) ([]Gate, error) {
 		x = append(x, v)
 	}
 	return x, rows.Err()
+}
+func (s *Service) ListScoped(c context.Context, o int64, ids []int64) ([]Gate, error) {
+	if len(ids) == 0 {
+		return []Gate{}, nil
+	}
+	ph := strings.TrimSuffix(strings.Repeat("?,", len(ids)), ",")
+	args := []any{o}
+	for _, id := range ids {
+		args = append(args, id)
+	}
+	rows, err := s.db.QueryContext(c, `SELECT id,organization_id,site_id,name,code,is_active FROM gates WHERE organization_id=? AND is_active=1 AND id IN (`+ph+`) ORDER BY id DESC`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Gate
+	for rows.Next() {
+		var v Gate
+		if err := rows.Scan(&v.ID, &v.OrganizationID, &v.SiteID, &v.Name, &v.Code, &v.IsActive); err != nil {
+			return nil, err
+		}
+		out = append(out, v)
+	}
+	return out, rows.Err()
 }
 func (s *Service) Get(c context.Context, o, id int64) (*Gate, error) {
 	var v Gate

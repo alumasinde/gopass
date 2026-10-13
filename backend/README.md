@@ -57,4 +57,16 @@ module/
 
 ## Platform administration and notifications
 
-See [`PLATFORM_AND_NOTIFICATIONS.md`](PLATFORM_AND_NOTIFICATIONS.md) for migration `0009`, platform-admin bootstrap, tenant lifecycle/provisioning endpoints, encrypted dedicated-DB configuration limitations, notification delivery/retries, and verification commands.
+See [`PLATFORM_AND_NOTIFICATIONS.md`](PLATFORM_AND_NOTIFICATIONS.md) for migration `0009`, platform-admin bootstrap, tenant lifecycle/provisioning endpoints, tenant-aware dedicated-DB routing and migration provisioning, notification delivery/retries, and verification commands.
+
+
+### Tenant database modes
+
+The backend supports `SHARED` tenants in the central MySQL schema and `DEDICATED` tenants through the tenant-aware database router. Dedicated mode requires `PLATFORM_DB_ENCRYPTION_KEY` (32 random bytes or base64 of 32 bytes); configure the dedicated database through the platform API and allow the provisioning worker to apply the embedded migrations and validate the schema before the tenant is marked READY/ACTIVE. Failed provisioning remains inactive and can be retried through the platform administration endpoint.
+
+### Security integration checks
+
+Run standard tests with `go test ./...`, integration tests with `go test -tags=integration -v ./internal/security/integration`, and static analysis with `go vet -tags=integration ./...`. Use only isolated MySQL test databases ending in `_test`. To exercise dedicated database routing, set `GOPASS_DEDICATED_TEST_DSN` to a separate empty `_test` database and configure `PLATFORM_DB_ENCRYPTION_KEY`.
+
+
+**Shared-to-dedicated migration safety:** current automated provisioning copies tenant identity and role grants, but does not migrate existing visitor, site, gatepass, check-in/out, workflow, audit, notification, or organization-setting history. Therefore the API and provisioner refuse to switch a shared tenant with operational records to dedicated mode. Export/migrate that history with a separately reviewed data migration before changing database mode; do not bypass this guard. New tenants with only their initial user/role grants can be provisioned directly into a dedicated database.

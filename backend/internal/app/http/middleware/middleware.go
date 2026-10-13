@@ -123,7 +123,10 @@ func Bearer(a *auth.Service, checker UserChecker) func(http.Handler) http.Handle
 				httpx.Fail(w, apperr.Unauthorized)
 				return
 			}
-			active, err := checker.IsActive(r.Context(), c.UserID, c.OrgID)
+			// Bind the signed organization claim before checking session/user state so
+			// tenant-aware database routing cannot accidentally query the shared DB.
+			ctx := tenancy.With(r.Context(), c.OrgID)
+			active, err := checker.IsActive(ctx, c.UserID, c.OrgID)
 			if err != nil || !active {
 				httpx.Fail(w, apperr.Unauthorized)
 				return
@@ -133,14 +136,13 @@ func Bearer(a *auth.Service, checker UserChecker) func(http.Handler) http.Handle
 				httpx.Fail(w, apperr.Unauthorized)
 				return
 			}
-			sessionActive, err := sessions.IsSessionActive(r.Context(), c.SessionID, c.UserID, c.OrgID)
+			sessionActive, err := sessions.IsSessionActive(ctx, c.SessionID, c.UserID, c.OrgID)
 			if err != nil || !sessionActive {
 				httpx.Fail(w, apperr.Unauthorized)
 				return
 			}
 
-			ctx := auth.With(r.Context(), c)
-			ctx = tenancy.With(ctx, c.OrgID)
+			ctx = auth.With(ctx, c)
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})
 	}

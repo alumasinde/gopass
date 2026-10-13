@@ -4,8 +4,11 @@ import (
 	"context"
 	"crypto/tls"
 	"database/sql"
+
 	"errors"
 	"fmt"
+	"github.com/alumasinde/gopass/internal/app/database"
+	"github.com/alumasinde/gopass/internal/platform/tenancy"
 	"io"
 	"log/slog"
 	"net"
@@ -23,15 +26,15 @@ type SMTPConfig struct {
 	From     string
 }
 type Worker struct {
-	db    *sql.DB
+	db    database.Handle
 	cfg   SMTPConfig
 	log   *slog.Logger
 	poll  time.Duration
 	batch int
 }
 
-func NewWorker(db *sql.DB, cfg SMTPConfig, log *slog.Logger) *Worker {
-	return &Worker{db: db, cfg: cfg, log: log, poll: 2 * time.Second, batch: 10}
+func NewWorker(db any, cfg SMTPConfig, log *slog.Logger) *Worker {
+	return &Worker{db: database.Adapt(db), cfg: cfg, log: log, poll: 2 * time.Second, batch: 10}
 }
 func (w *Worker) Run(ctx context.Context) {
 	ticker := time.NewTicker(w.poll)
@@ -48,8 +51,35 @@ func (w *Worker) Run(ctx context.Context) {
 	}
 }
 func (w *Worker) ProcessBatch(ctx context.Context) error {
+	// A routed database exposes tenant IDs. Process each tenant with an explicit
+	// tenant context so a dedicated tenant's queue is never read from the shared DB.
+	if enumerator, ok := w.db.(interface {
+		TenantIDs(context.Context) ([]int64, error)
+	}); ok {
+		ids, err := enumerator.TenantIDs(ctx)
+		if err != nil {
+			return err
+		}
+		var firstErr error
+		for _, orgID := range ids {
+			tenantCtx := tenancy.With(ctx, orgID)
+			if err := w.processTenantBatch(tenantCtx, &orgID); err != nil && !errors.Is(err, sql.ErrNoRows) {
+				if firstErr == nil {
+					firstErr = err
+				}
+				if w.log != nil {
+					w.log.ErrorContext(ctx, "notification tenant batch failed", "organization_id", orgID, "error", err)
+				}
+			}
+		}
+		return firstErr
+	}
+	return w.processTenantBatch(ctx, nil)
+}
+
+func (w *Worker) processTenantBatch(ctx context.Context, orgID *int64) error {
 	for i := 0; i < w.batch; i++ {
-		n, err := w.claim(ctx)
+		n, err := w.claim(ctx, orgID)
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil
 		}
@@ -63,7 +93,7 @@ func (w *Worker) ProcessBatch(ctx context.Context) error {
 			}
 			continue
 		}
-		if err := w.complete(ctx, n.ID); err != nil {
+		if err := w.complete(ctx, n, orgID); err != nil {
 			return err
 		}
 	}
@@ -76,18 +106,29 @@ type delivery struct {
 	Attempts, MaxAttempts              int
 }
 
-func (w *Worker) claim(ctx context.Context) (delivery, error) {
+func (w *Worker) claim(ctx context.Context, orgID *int64) (delivery, error) {
 	tx, err := w.db.BeginTx(ctx, nil)
 	if err != nil {
 		return delivery{}, err
 	}
 	defer tx.Rollback()
 	// Recover abandoned claims after worker crashes, then claim exactly one due row.
-	if _, err = tx.ExecContext(ctx, `UPDATE notifications SET status=CASE WHEN attempts>=max_attempts THEN 'DEAD' ELSE 'RETRY' END,claimed_at=NULL,updated_at=UTC_TIMESTAMP() WHERE status='PROCESSING' AND claimed_at < DATE_SUB(UTC_TIMESTAMP(),INTERVAL 10 MINUTE)`); err != nil {
+	if orgID != nil {
+		if _, err = tx.ExecContext(ctx, `UPDATE notifications SET status=CASE WHEN attempts>=max_attempts THEN 'DEAD' ELSE 'RETRY' END,claimed_at=NULL,updated_at=UTC_TIMESTAMP() WHERE organization_id=? AND status='PROCESSING' AND claimed_at < DATE_SUB(UTC_TIMESTAMP(),INTERVAL 10 MINUTE)`, *orgID); err != nil {
+			return delivery{}, err
+		}
+	} else if _, err = tx.ExecContext(ctx, `UPDATE notifications SET status=CASE WHEN attempts>=max_attempts THEN 'DEAD' ELSE 'RETRY' END,claimed_at=NULL,updated_at=UTC_TIMESTAMP() WHERE status='PROCESSING' AND claimed_at < DATE_SUB(UTC_TIMESTAMP(),INTERVAL 10 MINUTE)`); err != nil {
 		return delivery{}, err
 	}
 	var n delivery
-	err = tx.QueryRowContext(ctx, `SELECT id,organization_id,event_type,recipient,subject,CAST(payload AS CHAR),attempts,max_attempts FROM notifications WHERE status IN ('PENDING','RETRY') AND next_attempt_at<=UTC_TIMESTAMP() AND attempts<max_attempts ORDER BY id LIMIT 1 FOR UPDATE SKIP LOCKED`).Scan(&n.ID, &n.OrgID, &n.Event, &n.Recipient, &n.Subject, &n.Payload, &n.Attempts, &n.MaxAttempts)
+	query := `SELECT id,organization_id,event_type,recipient,subject,CAST(payload AS CHAR),attempts,max_attempts FROM notifications WHERE status IN ('PENDING','RETRY') AND next_attempt_at<=UTC_TIMESTAMP() AND attempts<max_attempts`
+	args := []any{}
+	if orgID != nil {
+		query += ` AND organization_id=?`
+		args = append(args, *orgID)
+	}
+	query += ` ORDER BY id LIMIT 1 FOR UPDATE SKIP LOCKED`
+	err = tx.QueryRowContext(ctx, query, args...).Scan(&n.ID, &n.OrgID, &n.Event, &n.Recipient, &n.Subject, &n.Payload, &n.Attempts, &n.MaxAttempts)
 	if err != nil {
 		return delivery{}, err
 	}
@@ -170,8 +211,14 @@ func (w *Worker) send(ctx context.Context, n delivery) error {
 	}
 	return client.Quit()
 }
-func (w *Worker) complete(ctx context.Context, id int64) error {
-	_, err := w.db.ExecContext(ctx, `UPDATE notifications SET status='DELIVERED',delivered_at=UTC_TIMESTAMP(),claimed_at=NULL,last_error=NULL,updated_at=UTC_TIMESTAMP() WHERE id=? AND status='PROCESSING'`, id)
+func (w *Worker) complete(ctx context.Context, n delivery, orgID *int64) error {
+	query := `UPDATE notifications SET status='DELIVERED',delivered_at=UTC_TIMESTAMP(),claimed_at=NULL,last_error=NULL,updated_at=UTC_TIMESTAMP() WHERE id=? AND status='PROCESSING'`
+	args := []any{n.ID}
+	if orgID != nil {
+		query += ` AND organization_id=?`
+		args = append(args, *orgID)
+	}
+	_, err := w.db.ExecContext(ctx, query, args...)
 	return err
 }
 func (w *Worker) fail(ctx context.Context, n delivery, sendErr error) error {
@@ -180,11 +227,11 @@ func (w *Worker) fail(ctx context.Context, n delivery, sendErr error) error {
 		msg = msg[:950]
 	}
 	if n.Attempts >= n.MaxAttempts {
-		_, err := w.db.ExecContext(ctx, `UPDATE notifications SET status='DEAD',claimed_at=NULL,last_error=?,updated_at=UTC_TIMESTAMP() WHERE id=? AND status='PROCESSING'`, msg, n.ID)
+		_, err := w.db.ExecContext(ctx, `UPDATE notifications SET status='DEAD',claimed_at=NULL,last_error=?,updated_at=UTC_TIMESTAMP() WHERE id=? AND organization_id=? AND status='PROCESSING'`, msg, n.ID, n.OrgID)
 		return err
 	}
 	delay := backoffSeconds(n.Attempts)
-	_, err := w.db.ExecContext(ctx, `UPDATE notifications SET status='RETRY',claimed_at=NULL,last_error=?,next_attempt_at=DATE_ADD(UTC_TIMESTAMP(),INTERVAL ? SECOND),updated_at=UTC_TIMESTAMP() WHERE id=? AND status='PROCESSING'`, msg, delay, n.ID)
+	_, err := w.db.ExecContext(ctx, `UPDATE notifications SET status='RETRY',claimed_at=NULL,last_error=?,next_attempt_at=DATE_ADD(UTC_TIMESTAMP(),INTERVAL ? SECOND),updated_at=UTC_TIMESTAMP() WHERE id=? AND organization_id=? AND status='PROCESSING'`, msg, delay, n.ID, n.OrgID)
 	if w.log != nil {
 		w.log.WarnContext(ctx, "notification delivery failed; retry scheduled", "notification_id", n.ID, "attempt", n.Attempts, "error", strings.TrimSpace(msg), "retry_seconds", delay)
 	}

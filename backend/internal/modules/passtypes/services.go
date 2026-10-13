@@ -4,12 +4,13 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"github.com/alumasinde/gopass/internal/app/database"
 	"strings"
 )
 
-type Service struct{ db *sql.DB }
+type Service struct{ db database.Handle }
 
-func NewService(db *sql.DB) *Service { return &Service{db: db} }
+func NewService(db any) *Service { return &Service{db: database.Adapt(db)} }
 
 func (s *Service) List(ctx context.Context, org int64) ([]PassType, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT id,organization_id,name,code,requires_approval,validity_minutes,is_active FROM pass_types WHERE organization_id=? ORDER BY name`, org)

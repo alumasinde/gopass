@@ -42,6 +42,8 @@ func TestCanWithScopeRejectsInvalidScopeAndIDs(t *testing.T) {
 		{"unknown scope", "GLOBAL", 1},
 		{"site id zero", ScopeSite, 0},
 		{"site id negative", ScopeSite, -1},
+		{"gate id zero", ScopeGate, 0},
+		{"gate id negative", ScopeGate, -1},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

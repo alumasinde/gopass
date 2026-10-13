@@ -1,7 +1,6 @@
 package visitors
 
 import (
-	"database/sql"
 	"errors"
 	"net/http"
 
@@ -19,7 +18,7 @@ type Handler struct {
 	service *Service
 }
 
-func NewHandler(db *sql.DB, a *rbac.Service, au *audit.Service) *Handler {
+func NewHandler(db any, a *rbac.Service, au *audit.Service) *Handler {
 	return &Handler{a, au, NewService(db)}
 }
 func (h *Handler) registerRoutes(r chi.Router) {
