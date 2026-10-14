@@ -280,7 +280,7 @@ export default function VisitsPage() {
                         <div className="module-row-actions">
                           {canManage && !visit.check_out_time && <button type="button" className="module-button module-button-small module-button-secondary" disabled={actionId === visit.id} onClick={() => void checkOutVisit(visit)}>Check out</button>}
                           {canManage && <button type="button" className="module-icon-button" aria-label={`Edit visit #${visit.id}`} title="Edit visit" onClick={() => openEdit(visit)}>✎</button>}
-                          {canManage && <button type="button" className="module-icon-button" aria-label={`View visit #${visit.id}`} title="View details" onClick={() => setSelectedVisit(visit)}>→</button>}
+                          {canView && <button type="button" className="module-icon-button" aria-label={`View visit #${visit.id}`} title="View details" onClick={() => setSelectedVisit(visit)}>→</button>}
                           {canManage && <button type="button" className="module-icon-button module-icon-button-danger" aria-label={`Delete visit #${visit.id}`} title="Delete visit" disabled={actionId === visit.id} onClick={() => void deleteVisit(visit)}>⌫</button>}
                         </div>
                       </td>

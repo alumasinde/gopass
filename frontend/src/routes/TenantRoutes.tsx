@@ -33,7 +33,7 @@ export const tenantRoutes = [
   { path: '/tenant/login', element: <TenantPublicRoute><TenantLogin /></TenantPublicRoute> },
   { path: '/tenant/dashboard', element: <TenantProtectedRoute><TenantLayout><TenantDashboard /></TenantLayout></TenantProtectedRoute> },
   { path: '/tenant/visitors', element: <TenantProtectedRoute permission="visitors.view"><TenantLayout><VisitorsPage /></TenantLayout></TenantProtectedRoute> },
-  { path: '/tenant/visits', element: <TenantProtectedRoute permission="gatepasses.view"><TenantLayout><VisitsPage /></TenantLayout></TenantProtectedRoute> },
+  { path: '/tenant/visits', element: <TenantProtectedRoute permission="visits.view"><TenantLayout><VisitsPage /></TenantLayout></TenantProtectedRoute> },
   { path: '/tenant/sites', element: <TenantProtectedRoute permission="sites.view"><TenantLayout><SitesPage /></TenantLayout></TenantProtectedRoute> },
   { path: '/tenant/gates', element: <TenantProtectedRoute permission="gates.view"><TenantLayout><GatesPage /></TenantLayout></TenantProtectedRoute> },
   { path: '/tenant/identification-types', element: <TenantProtectedRoute permission="identification_types.view"><TenantLayout><IdentificationTypesPage /></TenantLayout></TenantProtectedRoute> },

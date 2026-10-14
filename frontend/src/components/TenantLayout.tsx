@@ -27,7 +27,7 @@ export default function TenantLayout({ children }: { children: ReactNode }) {
         <nav className="tenant-nav" aria-label="Tenant navigation">
           <NavLink to="/tenant/dashboard" className={({ isActive }) => `tenant-nav-item${isActive ? ' active' : ''}`}><span>▦</span> Overview</NavLink>
           {canAny('visitors.view') && <NavLink to="/tenant/visitors" className={({ isActive }) => `tenant-nav-item${isActive ? ' active' : ''}`}><span>♙</span> Visitors</NavLink>}
-          {canAny('gatepasses.view') && <NavLink to="/tenant/visits" className={({ isActive }) => `tenant-nav-item${isActive ? ' active' : ''}`}><span>◷</span> Visits</NavLink>}
+          {canAny('visits.view') && <NavLink to="/tenant/visits" className={({ isActive }) => `tenant-nav-item${isActive ? ' active' : ''}`}><span>◷</span> Visits</NavLink>}
           {canAny('approvals.view', 'approvals.approve') && <button className="tenant-nav-item tenant-nav-disabled" type="button" title="Approval pages are not included in this UI phase" disabled><span>✓</span> Approvals <small>Next</small></button>}
           {canAny('checkins.view', 'checkins.perform', 'checkouts.view', 'checkouts.perform') && <button className="tenant-nav-item tenant-nav-disabled" type="button" title="Security desk pages are not included in this UI phase" disabled><span>⌖</span> Security desk <small>Next</small></button>}
           {canAny('users.view', 'roles.view', 'sites.view', 'gates.view', 'pass_types.view', 'organization.view', 'identification_types.view') && <div className="tenant-nav-label">ADMINISTRATION</div>}
